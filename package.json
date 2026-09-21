@@ -1,0 +1,29 @@
+{
+  "name": "weathergpt",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Conversational AI for weather forecasting, alerts and climate intelligence — multilingual and voice-enabled.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "oxlint",
+    "check:nlu": "node scripts/check-nlu.mjs",
+    "check": "npm run lint && npm run check:nlu && npm run build",
+    "verify:ui": "bash scripts/verify.sh"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-globe.gl": "^2.38.0",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "oxlint": "^1.81.0",
+    "vite": "^8.3.0"
+  }
+}

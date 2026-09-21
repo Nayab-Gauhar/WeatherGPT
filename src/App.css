@@ -1,0 +1,114 @@
+/* ==========================================================================
+   Application shell — map on the left, conversation on the right
+   ========================================================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.app__main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /*
+   * The conversation column is sized so a weather card's header — place name
+   * plus "Updated …" timestamp — fits on one line without wrapping.
+   */
+  grid-template-columns: minmax(0, 1fr) clamp(372px, 32vw, 424px);
+  gap: 18px;
+  padding: 0 24px 20px;
+}
+
+/* ------------------------------------------------------------------- map -- */
+
+.app__map {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app__map .globe {
+  flex: 1;
+  min-height: 0;
+}
+
+.app__credit {
+  flex: none;
+  padding: 10px 2px 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.app__credit span {
+  margin: 0 4px;
+}
+
+/* ------------------------------------------------------------------ chat -- */
+
+.app__chat {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.app__chat > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------- responsive -- */
+
+/* Tablet: narrow the map, keep the split. */
+@media (max-width: 1100px) {
+  .app__main {
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 38vw, 380px);
+    gap: 14px;
+    padding: 0 16px 16px;
+  }
+}
+
+/*
+ * Phone: stack, conversation first.
+ *
+ * The problem statement asks for a mobile-first conversational platform, so on a
+ * handset the chat takes the majority of the viewport and the map becomes a
+ * fixed-height companion above it rather than competing for space.
+ */
+@media (max-width: 860px) {
+  .app__main {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 12px 12px;
+    overflow-y: auto;
+  }
+
+  .app__map {
+    flex: none;
+    height: 42vh;
+    min-height: 260px;
+  }
+
+  .app__chat {
+    flex: 1;
+    min-height: 70vh;
+  }
+
+  .app__credit {
+    padding-top: 8px;
+    font-size: 10.5px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app__map {
+    height: 34vh;
+    min-height: 220px;
+  }
+}
