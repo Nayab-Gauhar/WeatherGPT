@@ -323,6 +323,64 @@ export async function fetchClimateTrend({ latitude, longitude, years = 15, timez
 }
 
 /**
+ * Observed weather for the current month so far.
+ *
+ * `fetchClimateTrend` deliberately stops at last year, because the ERA5
+ * reanalysis lags real time by several days. That leaves a gap: without
+ * month-to-date actuals, "is this September wetter than normal?" is
+ * unanswerable — and a correctly-grounded assistant will (rightly) refuse to
+ * answer it rather than guess.
+ *
+ * The forecast endpoint's `past_days` window covers that gap with recent
+ * observations, so the comparison against normals becomes possible.
+ */
+export async function fetchMonthToDate({ latitude, longitude, timezone = 'auto' }) {
+  const json = await getJSON(
+    FORECAST_URL,
+    {
+      latitude,
+      longitude,
+      daily: 'precipitation_sum,temperature_2m_mean,temperature_2m_max',
+      past_days: '92',
+      forecast_days: '1',
+      timezone,
+    },
+    { ttl: 60 * 60 * 1000 },
+  );
+
+  const times = json.daily?.time ?? [];
+  const rain = json.daily?.precipitation_sum ?? [];
+  const mean = json.daily?.temperature_2m_mean ?? [];
+
+  // "Today" in the location's own timezone, not the browser's.
+  const nowLocal = new Date(Date.now() + (json.utc_offset_seconds ?? 0) * 1000);
+  const year = nowLocal.getUTCFullYear();
+  const month = nowLocal.getUTCMonth() + 1;
+  const today = nowLocal.toISOString().slice(0, 10);
+
+  let rainTotal = 0;
+  const temps = [];
+  let days = 0;
+
+  times.forEach((iso, i) => {
+    if (iso > today) return; // exclude the forecast day
+    if (Number(iso.slice(0, 4)) !== year || Number(iso.slice(5, 7)) !== month) return;
+    if (rain[i] != null) rainTotal += rain[i];
+    if (mean[i] != null) temps.push(mean[i]);
+    days += 1;
+  });
+
+  return {
+    year,
+    month,
+    daysElapsed: days,
+    rainfall: Math.round(rainTotal * 10) / 10,
+    meanTemp: temps.length ? round1(avg(temps)) : null,
+    through: today,
+  };
+}
+
+/**
  * Run the same forecast through several NWP models so the UI can show
  * ensemble agreement — an honest proxy for forecast confidence.
  */

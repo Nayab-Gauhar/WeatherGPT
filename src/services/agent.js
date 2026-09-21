@@ -14,13 +14,15 @@
  * follow-ups like "will it rain tomorrow?" resolve without repeating the city.
  */
 
-import { parseQuery, INTENTS } from './nlu.js';
+import { parseQuery, assessComplexity, INTENTS } from './nlu.js';
+import { isGeminiConfigured, runGeminiTurn } from './gemini.js';
 import {
   geocode,
   fetchForecast,
   fetchAirQuality,
   fetchClimateTrend,
   fetchModelComparison,
+  fetchMonthToDate,
 } from './openMeteo.js';
 import { deriveAlerts } from './alerts.js';
 import { generalAdvisory, sectorAdvisory, speechSummary } from './advisory.js';
@@ -286,11 +288,29 @@ async function handleClimate(parsed, place, lang) {
     timezone: place.timezone ?? 'auto',
     years: 15,
   });
+  // Month-to-date lets the card answer "and how does this month compare?"
+  const mtd = await fetchMonthToDate({
+    latitude: place.latitude,
+    longitude: place.longitude,
+    timezone: place.timezone ?? 'auto',
+  }).catch(() => null);
+
+  let monthToDate = null;
+  if (mtd && climate.normalRain != null && mtd.daysElapsed > 0) {
+    const daysInMonth = new Date(Date.UTC(mtd.year, mtd.month, 0)).getUTCDate();
+    const proRated = (climate.normalRain * mtd.daysElapsed) / daysInMonth;
+    monthToDate = {
+      days_elapsed: mtd.daysElapsed,
+      observed_rain_mm: mtd.rainfall,
+      expected_rain_by_now_mm: Math.round(proRated),
+      percent_of_normal: proRated > 0 ? Math.round((mtd.rainfall / proRated) * 100) : null,
+    };
+  }
 
   const years = climate.toYear - climate.fromYear + 1;
   return {
     text: tpl('climateIntro', lang, placeLabel(place, lang), years),
-    blocks: [{ type: 'climate', climate, place }],
+    blocks: [{ type: 'climate', climate, place, monthToDate }],
     chips: genericChips(place, lang),
     speech: `${placeName(place, lang)}: ${climate.monthName} mean temperature is changing by ${climate.tempTrendPerDecade} degrees per decade.`,
     climate,
@@ -352,6 +372,45 @@ async function handleAdvisory(parsed, place, lang) {
   };
 }
 
+/* ------------------------------------------------------- Tier 2: Gemini --- */
+
+/**
+ * Hand the turn to the language model with tool access.
+ *
+ * Returns `null` on any failure, which is the whole point of the contract: the
+ * caller then runs the deterministic path instead, so an overloaded or
+ * misconfigured model degrades the answer rather than losing it.
+ */
+async function handleWithGemini(text, { lang, context, onStep }) {
+  const result = await runGeminiTurn(text, {
+    lang,
+    place: context.place ?? null,
+    model: context.model,
+    onStep,
+  });
+
+  if (!result.ok || !result.text) {
+    // Return the reason rather than a bare null. Silently degrading to the
+    // deterministic path hides *why* the model path failed, which makes a
+    // misconfigured key indistinguishable from an overloaded one.
+    return { failed: true, error: result.error ?? 'no-text', toolCalls: result.toolCalls };
+  }
+
+  const place = result.place ?? context.place ?? null;
+
+  return {
+    text: result.text,
+    rich: true,
+    blocks: result.blocks,
+    chips: place ? genericChips(place, lang) : [],
+    speech: result.text,
+    place,
+    engine: 'gemini',
+    model: result.model,
+    toolCalls: result.toolCalls,
+  };
+}
+
 const HANDLERS = {
   [INTENTS.CURRENT]: handleCurrent,
   [INTENTS.FORECAST]: handleForecast,
@@ -372,7 +431,7 @@ const HANDLERS = {
  * @param {object} options     { lang, context }
  * @returns {Promise<{ message: object, context: object }>}
  */
-export async function respond(text, { lang = 'en', context = {} } = {}) {
+export async function respond(text, { lang = 'en', context = {}, onStep } = {}) {
   const started = performance.now();
   const parsed = parseQuery(text, { lang, context });
   const replyLang = parsed.lang;
@@ -398,6 +457,64 @@ export async function respond(text, { lang = 'en', context = {} } = {}) {
       },
       context: { ...context, lang: replyLang },
     };
+  }
+
+  /*
+   * Routing: Tier 1 (deterministic) vs Tier 2 (Gemini with tools).
+   *
+   * Tier 1 handles a recognisable question in ~200 ms with no network call and
+   * no cost, so it stays the default. Tier 2 is reserved for questions Tier 1
+   * structurally cannot express — more than one location, comparison, personal
+   * context, or a phrasing it could not classify.
+   *
+   * Greetings never escalate: they need no data and no reasoning.
+   */
+  const complexity = assessComplexity(text, parsed);
+  const conversational = parsed.intent === INTENTS.GREETING || parsed.intent === INTENTS.HELP;
+  let aiFallbackReason = null;
+
+  if (isGeminiConfigured && complexity.needsLlm && !conversational) {
+    const ai = await handleWithGemini(text, { lang: replyLang, context, onStep });
+
+    if (ai?.failed) {
+      aiFallbackReason = ai.error;
+      // Visible in the browser console during development; the reason also
+      // travels in the answer's metadata below.
+      if (import.meta.env?.DEV) {
+        console.warn(`[WeatherGPT] Tier 2 unavailable (${ai.error}) — using deterministic path.`);
+      }
+    }
+
+    if (ai && !ai.failed) {
+      return {
+        message: {
+          ...base,
+          text: ai.text,
+          rich: true,
+          blocks: ai.blocks,
+          chips: ai.chips,
+          speech: ai.speech,
+          place: ai.place,
+          meta: {
+            intent: parsed.intent,
+            engine: 'gemini',
+            model: ai.model,
+            routedBecause: complexity.reasons,
+            toolCalls: ai.toolCalls,
+            confidence: parsed.confidence,
+            latencyMs: Math.round(performance.now() - started),
+            sources: groundedSources(ai.toolCalls),
+          },
+        },
+        context: {
+          ...context,
+          lang: replyLang,
+          place: ai.place ?? context.place,
+          lastIntent: parsed.intent,
+        },
+      };
+    }
+    // Gemini unavailable or produced nothing usable — fall through to Tier 1.
   }
 
   const { place, resolvedBy, unresolvedQuery } = await resolvePlace(parsed, context);
@@ -439,6 +556,9 @@ export async function respond(text, { lang = 'en', context = {} } = {}) {
           model: parsed.model ?? 'best_match',
           latencyMs,
           sources: sourcesFor(parsed.intent),
+          engine: 'deterministic',
+          aiFallback: aiFallbackReason,
+          routedBecause: complexity.reasons,
         },
       },
       context: {
@@ -466,6 +586,20 @@ export async function respond(text, { lang = 'en', context = {} } = {}) {
       context: { ...context, lang: replyLang, place },
     };
   }
+}
+
+/** Name the datasets a Gemini answer was actually grounded on. */
+function groundedSources(toolCalls = []) {
+  const map = {
+    get_forecast: 'Multi-model NWP blend',
+    get_warnings: 'Derived warnings (IMD thresholds)',
+    get_air_quality: 'CAMS global air quality',
+    get_climate_normals: 'ERA5 reanalysis (Copernicus/ECMWF)',
+    get_sector_advisory: 'Sector advisory engine',
+    compare_forecast_models: 'NOAA GFS · ECMWF IFS · DWD ICON',
+  };
+  const names = [...new Set(toolCalls.filter((c) => c.ok).map((c) => map[c.name]).filter(Boolean))];
+  return names.length ? names : ['Gemini 2.5 Flash'];
 }
 
 function sourcesFor(intent) {

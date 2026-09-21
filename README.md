@@ -18,10 +18,28 @@ npm install
 npm run dev          # http://127.0.0.1:5173
 ```
 
-No API keys, no accounts, no backend to start. Every data source is keyless.
+That is enough. All weather, air-quality and climate data is keyless, and query
+understanding runs locally, so the app is fully functional with no configuration.
+
+Three optional keys each upgrade one capability:
 
 ```bash
-npm run check        # lint + NLU test suite + production build
+cp .env.example .env.local     # then fill in what you have
+```
+
+| Key | Adds |
+|---|---|
+| `VITE_GEMINI_API_KEY` | Answers to open-ended and comparative questions ([AI Studio](https://aistudio.google.com/apikey)) |
+| `VITE_SARVAM_API_KEY` | Accurate Indian-language speech in and out ([Sarvam](https://dashboard.sarvam.ai)) |
+| `VITE_DEEPGRAM_API_KEY` | Higher-quality English speech ([Deepgram](https://console.deepgram.com)) |
+
+> ⚠️ Vite inlines `VITE_*` variables into the client bundle, so these keys are
+> readable by anyone who loads the page. Fine for local development and demos;
+> before deploying publicly, move the calls behind the gateway described at the
+> end of this file. `.env.local` is gitignored.
+
+```bash
+npm run check        # lint + 44 NLU/routing tests + production build
 npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 ```
 
@@ -33,12 +51,13 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 |---|---|
 | **Real-time conditions** | Temperature, feels-like, humidity, wind, pressure and visibility for any town, village or coordinate on Earth. |
 | **Natural-language queries** | "Will it rain in Kutch tomorrow?", "किसान के लिए फसल सलाह", "சென்னையில் வானிலை எப்படி?" |
+| **Open-ended reasoning** | "Compare Delhi and Bengaluru for a morning run — I have asthma" is answered from live data for both cities, with a recommendation. |
 | **NWP model integration** | Forecasts are served from GFS (NOAA), IFS (ECMWF) and ICON (DWD). A model-comparison view shows where they disagree. |
 | **Early warnings** | Colour-coded rain / heat / cold / wind / fog / thunderstorm / air-quality warnings on IMD's impact-based thresholds. |
 | **Location-based forecasting** | Click any point on the globe, or use device geolocation. |
 | **Multilingual** | 10 languages. The reply language follows the *question*, not a setting. |
 | **Climate analysis** | 15 years of ERA5 reanalysis with least-squares trends per decade. |
-| **Voice** | Speech-to-text input and text-to-speech readout via the Web Speech API. |
+| **Voice** | Ask by speaking and hear the answer read back — Sarvam for Indian languages, Deepgram for English, browser Web Speech as fallback. |
 | **Sector advisories** | Agriculture, aviation, marine and urban/disaster decision support. |
 
 ---
@@ -47,7 +66,6 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 
 ```
 ┌──────────────────────── React 19 + Vite ─────────────────────────┐
-│                                                                  │
 │  GlobeView ──┐                          ┌── ChatPanel            │
 │  (3D / 2D)   │                          │   Composer (text+mic)  │
 │              └──────── App state ───────┘   Message + cards      │
@@ -55,17 +73,26 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 │                     services/agent.js                            │
 │              the one place a "turn" is orchestrated              │
 │                             │                                    │
-│   ┌──────────┬──────────────┼──────────────┬─────────────┐       │
-│   ▼          ▼              ▼              ▼             ▼       │
-│  nlu.js   openMeteo.js   alerts.js   advisory.js    speech.js    │
-│  intent   data access    warnings    decisions      voice I/O    │
-│   │           │                                                  │
-│   │           └──▶ GFS · ECMWF IFS · ICON · ERA5 · CAMS           │
-│   └──▶ llm.js (optional hosted model, off by default)            │
+│              ┌──────────────┴──────────────┐                     │
+│         TIER 1                          TIER 2                   │
+│         nlu.js                          gemini.js                │
+│    deterministic parser            tool-calling loop             │
+│    ~200 ms · no network            1–7 s · Gemini 2.5 Flash      │
+│              │                              │                    │
+│              │                          tools.js                 │
+│              │                     6 callable functions          │
+│              └──────────────┬──────────────┘                     │
+│                             ▼                                    │
+│      openMeteo.js · alerts.js · advisory.js · geo.js             │
+│      data access   warnings    decisions     resolution          │
+│                             │                                    │
+│                  GFS · ECMWF IFS · ICON · ERA5 · CAMS            │
+│                                                                  │
+│      speech.js ──▶ Sarvam (Indic) · Deepgram (en) · Web Speech   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Every user turn follows the same path:
+**Tier 1** handles any question with a recognisable shape:
 
 ```
 text ─▶ parseQuery      structured intent + entities
@@ -74,6 +101,19 @@ text ─▶ parseQuery      structured intent + entities
      ─▶ derive/advise   thresholds and sector logic
      ─▶ buildMessage    sentence + typed blocks + follow-up chips
 ```
+
+**Tier 2** handles everything else:
+
+```
+text ─▶ assessComplexity   multiple places? comparison? personal context?
+     ─▶ Gemini + 6 tools   model chooses what to look up
+     ─▶ executeTool        real data fetched, location re-resolved
+     ─▶ loop back          results returned to the model, up to 4 rounds
+     ─▶ grounded answer    prose from the model, cards from the tools
+```
+
+Routing costs nothing — it runs on the Tier 1 parse. Any Tier 2 failure falls
+back to Tier 1, and the reason is shown to the user rather than hidden.
 
 The orchestrator returns **pure data**. Rendering is entirely the UI's business,
 which is why the same answer can be drawn as a card, read aloud, or (in a future
@@ -92,15 +132,22 @@ src/
 │   ├── Composer.jsx         typing and dictation
 │   ├── Message.jsx          one turn, with read-aloud
 │   ├── WeatherIcon.jsx      illustrated WMO condition icons
+│   ├── RichText.jsx         safe formatter for model-generated prose
 │   └── blocks/              one card per answer type + BlockRenderer
 ├── services/
-│   ├── agent.js             turn orchestration
-│   ├── nlu.js               intent + entity extraction
-│   ├── llm.js               optional hosted-model adapter
+│   ├── agent.js             turn orchestration + tier routing
+│   ├── nlu.js               Tier 1 parser + complexity assessment
+│   ├── gemini.js            Tier 2 tool-calling loop
+│   ├── tools.js             6 callable functions + grounding payloads
+│   ├── geo.js               place resolution (also a tool-safety boundary)
 │   ├── openMeteo.js         all upstream I/O, caching, normalising
 │   ├── alerts.js            IMD-style warning thresholds
 │   ├── advisory.js          general + sector decision support
-│   └── speech.js            Web Speech wrapper
+│   ├── speech.js            engine selection for voice in and out
+│   ├── audio.js             mic capture + WAV encoding
+│   └── voice/
+│       ├── sarvam.js        Indian-language STT (saarika) + TTS (bulbul)
+│       └── deepgram.js      English TTS (aura-2)
 ├── i18n/                    languages, UI labels, templates, grammar
 ├── data/                    WMO codes, curated gazetteer
 └── utils/format.js          timezone-safe formatting
@@ -110,22 +157,81 @@ src/
 
 ## Design decisions worth explaining
 
-### Query understanding is deterministic, not an LLM call
+### Two tiers, because neither approach is sufficient alone
 
-`services/nlu.js` is a lexicon-driven parser across all ten languages, not a
-hosted model. For this product that is a feature rather than a compromise:
+Most questions have a recognisable shape, and for those a lexicon-driven parser
+beats a model call outright: it answers in ~200 ms, costs nothing, works offline,
+and cannot invent a district — which matters when output may feed warning
+dissemination.
 
-- **Latency.** Parsing costs microseconds, so response time is dominated by the
-  meteorological fetch. Measured latency is printed under every answer.
-- **It cannot hallucinate a location.** When output may feed disaster-warning
-  dissemination, inventing a district is not an acceptable failure mode.
-- **It runs offline and costs nothing per query**, which is what makes
-  district-scale deployment plausible.
+But a fixed schema has a hard ceiling. It carries **one** `location` field, so it
+physically cannot represent "compare Kolkata and Mumbai", however the prompt is
+tuned. That is why Tier 2 uses **tool calling** rather than one-shot intent
+extraction: each call carries its own arguments, and Gemini correctly emits two
+parallel `get_forecast` calls for that question.
 
-`services/llm.js` is a drop-in adapter for OpenAI / Llama / Gemini for genuinely
-open-ended questions. It returns the same structured shape, so either engine can
-drive the app; if it is unreachable, the deterministic parser answers anyway.
-Disabled unless configured — see `.env.example`.
+Tool calling alone is not sufficient either. Asked *"is this September wetter than
+normal in Nagpur, and will next week continue?"*, the model fetched the climate
+normals and stopped — silently answering half. It works one step at a time, so
+results must be fed back. Hence a **bounded** loop: 4 iterations, 8 tool calls,
+22 s. When a cap is hit, a final pass runs with the tools withdrawn, so it answers
+from the data already gathered instead of discarding it.
+
+### The grounding invariant
+
+The model never sources a number. Tools fetch real data, the system instruction
+forbids stating any figure absent from a tool result, and the cards rendered
+beneath the prose come from those same results — so every claim can be checked
+against the numbers on screen.
+
+This was verified, not assumed. Asked to compare two cities, Gemini reported
+"up to 33.3 mm" and "below 3.4 mm"; the API's actual daily maxima were 33.3 and
+3.4.
+
+It also holds in the negative direction, which is the more telling test. Before
+month-to-date observations existed, the model was asked whether September was
+wetter than normal and replied that it *could not say*, having only historical
+normals. It refused to guess. The gap was in the tooling, not the model, so
+`fetchMonthToDate` was added — and the question now answers correctly, at 122%
+of normal.
+
+### Calibrating the model, not just prompting it
+
+Three findings from measurement that no prompt change would have fixed:
+
+- **Thinking tokens come out of the answer budget.** Gemini 2.5 Flash reasons
+  internally by default. On a two-part question it spent 861 tokens thinking and
+  had 35 left for the reply, which returned truncated mid-sentence with
+  `finishReason: MAX_TOKENS` — dropping half the user's question. Setting
+  `thinkingBudget: 0` fixed the truncation *and* roughly halved latency.
+- **Free-tier quota is metered per model, per day** — 20 requests, per the
+  `GenerateRequestsPerDayPerProjectPerModel-FreeTier` violation. Because each
+  model has its own bucket, the fallback chain multiplies usable capacity, and
+  exhausted models are remembered in `sessionStorage` so a reload does not re-pay
+  a round trip rediscovering them.
+- **Model latency varies by more than 10×** on identical requests:
+  `gemini-3-flash-preview` 1.0 s, `gemini-flash-latest` 6.1 s,
+  `gemini-3.5-flash` 12.6 s. Since a turn needs two or three round trips, the
+  chain is ordered by measured speed — with the slowest model tried first, two
+  calls alone exceeded the budget and the answer was lost to the fallback.
+
+### Voice is the accessibility feature, not a gimmick
+
+Web Speech is adequate for English and unreliable for Hindi, Bengali or Tamil;
+on many Android builds no Indian-language voice is installed at all. So Sarvam
+handles Indian languages in both directions, Deepgram handles English synthesis,
+and Web Speech remains the fallback.
+
+One detail worth recording: `MediaRecorder` produces WebM/Opus, but the
+recognition endpoint was verified against 16 kHz mono WAV. Rather than gamble on
+format support, captured audio is decoded with `decodeAudioData`, downsampled and
+re-encoded as WAV in the browser — no library, nothing to install. Downsampling
+averages each window rather than dropping samples, because decimation aliases
+high frequencies into the speech band and measurably harms recognition.
+
+The round trip is tested end to end: synthesise Hindi → convert through our own
+encoder → transcribe → the sentence returns character-for-character.
+
 
 ### Warnings are derived from thresholds, and always carry an action
 
@@ -214,6 +320,9 @@ questions in a conversation are instant.
 | ERA5 | Copernicus / ECMWF | Climate trends, 15-year normals |
 | CAMS | Copernicus | Air quality (PM2.5, PM10, NO₂, O₃, SO₂, CO) |
 | Geocoding | Open-Meteo / GeoNames | Place resolution |
+| Gemini 2.5 Flash | Google AI Studio | Open-ended questions, tool calling |
+| saarika:v2.5 / bulbul:v3 | Sarvam AI | Indian-language speech in and out |
+| aura-2 | Deepgram | English speech synthesis |
 
 Delivered through the [Open-Meteo](https://open-meteo.com) API family, which
 serves post-processed output from these systems without an API key. All upstream
@@ -235,9 +344,21 @@ than one that admits its edges:
   Telugu and Marathi; partial for Gujarati, Kannada, Malayalam and Punjabi,
   which fall back to English for less common labels. The settings panel shows
   each language's real coverage rather than implying completeness.
-- **Voice support depends on the browser.** Dictation needs Chromium or Safari;
-  playback quality depends on which system voices are installed. Both paths are
+- **Voice support degrades by environment.** With a Sarvam key, recognition works
+  in any browser that can record audio; without one it falls back to Web Speech,
+  which needs Chromium or Safari and is weak for Indian languages. Every path is
   capability-checked and hidden when unavailable rather than failing on click.
+- **Microphone capture was not verified end to end.** The sandbox used for
+  development has no audio device, so recording and audible playback could only
+  be tested as far as the data path: synthesis returns valid audio, and a WAV
+  produced by our own encoder transcribes back exactly. Real-device testing of
+  `getUserMedia` remains outstanding.
+- **The Gemini free tier allows 20 requests per model per day.** A Tier 2 answer
+  costs two or three, so expect on the order of 25–30 open-ended questions daily
+  across the model chain before everything falls back to Tier 1. The UI says so
+  when it happens. Billing lifts the limit.
+- **API keys ship in the client bundle.** Vite inlines `VITE_*` at build time.
+  Acceptable for local use, not for public deployment — see the gateway below.
 - **No WRF.** The problem statement names GFS/WRF; GFS is integrated directly.
   WRF is a regional model an agency runs itself, so it would arrive as an
   in-house gridded feed — that belongs behind the gateway described below,
@@ -274,13 +395,21 @@ Mobile / Web ──▶ FastAPI gateway ──▶ Redis cache ──▶ NWP + IMD
 ## Testing
 
 ```bash
-npm run check:nlu    # 28 cases across 10 languages: intent, place, day, sector
+npm run check:nlu    # 44 assertions: 28 parsing + 16 tier-routing
 npm run verify:ui    # real browser: 14 scenarios, screenshots + text assertions
 ```
 
 `scripts/check-nlu.mjs` covers intent classification and entity extraction,
 including the agglutinated-suffix forms (`কলকাতায়`, `சென்னையில்`,
 `અમદાવાદમાં`, `കൊച്ചിയിൽ`) that a naive matcher fails on.
+
+The routing assertions exist because a real bug slipped past manual testing:
+*"is this September wetter than normal in Nagpur, and will next week continue?"*
+scored high confidence on the climate intent, stayed on Tier 1, and answered only
+the first half. They also pin a subtler trap — the Hindi word for "or" (`या`)
+occurs inside the ordinary question marker `क्या`, so naive substring matching
+escalated *"will it rain tomorrow?"* to the model. Indic vowel signs are Unicode
+**marks**, so boundary checks must exclude `\p{M}` as well as `\p{L}`.
 
 `scripts/verify.sh` drives the running app through one query per intent and
 asserts the rendered text, which catches data-path and layout regressions that a

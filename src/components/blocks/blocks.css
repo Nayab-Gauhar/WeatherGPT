@@ -929,3 +929,31 @@
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+
+/* Month-to-date vs normal, on the climate card */
+.climate__mtd {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 11.8px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.climate__mtd strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.climate__mtd.is-wet {
+  border-color: color-mix(in srgb, var(--brand-500) 40%, transparent);
+  background: color-mix(in srgb, var(--brand-500) 8%, var(--surface));
+}
+
+.climate__mtd.is-dry {
+  border-color: color-mix(in srgb, var(--orange) 40%, transparent);
+  background: color-mix(in srgb, var(--orange) 8%, var(--surface));
+}

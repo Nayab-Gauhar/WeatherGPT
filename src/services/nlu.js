@@ -8,24 +8,25 @@
  *
  * Design notes
  * ------------
- * This is a deterministic, lexicon-driven parser rather than a hosted LLM call.
- * That is a deliberate choice for this class of product:
- *   - it answers in tens of microseconds, so response latency is dominated by
- *     the meteorological fetch rather than by inference;
+ * This is Tier 1 of a two-tier stack: a deterministic, lexicon-driven parser
+ * rather than a model call. For questions with a recognisable shape that is
+ * strictly better:
+ *   - it answers in tens of microseconds, so latency is dominated by the
+ *     meteorological fetch rather than by inference;
  *   - it never hallucinates a location or an intent, which matters when the
  *     output feeds disaster-warning dissemination;
  *   - it works offline and costs nothing per query, so it can be deployed at
  *     district scale.
  *
- * `services/llm.js` provides a drop-in adapter for a hosted model
- * (OpenAI / Llama / Gemini) for genuinely open-ended questions; when it is
- * configured, `parseQuery` is used as the fast path and as the fallback if the
- * model is unreachable. The rest of the application depends only on the shape
- * documented above, so either engine can drive it.
+ * Its ceiling is structural, though: a single `location` field cannot express
+ * "compare Kolkata and Mumbai". `assessComplexity()` at the bottom of this file
+ * detects the questions that exceed it and hands them to Tier 2
+ * (`services/gemini.js`), which uses tool calling and can. Tier 1 remains the
+ * fallback whenever Tier 2 is unavailable.
  */
 
 import { SCRIPT_RANGES, DEFAULT_LANG } from '../i18n/languages.js';
-import { scanForPlace } from '../data/places.js';
+import { scanForPlace, scanAllPlaces } from '../data/places.js';
 
 export const INTENTS = {
   CURRENT: 'current',
@@ -492,6 +493,127 @@ export function parseQuery(text, { lang: preferred = DEFAULT_LANG, context = {} 
     confidence: Math.min(1, 0.35 + topScore * 0.18 + (resolvedPlace || location.query ? 0.25 : 0)),
     scores,
   };
+}
+
+/* ------------------------------------------------------- routing decision -- */
+
+/**
+ * Words that signal a question this parser cannot fully represent.
+ *
+ * Comparison needs more than one location, and a fixed extraction schema has
+ * only one location field. Personal context ("I have asthma", "for my wedding")
+ * needs the answer reasoned *about* the data rather than merely reported. Both
+ * belong on the language-model path.
+ */
+const COMPARATIVE = [
+  'compare', 'comparison', 'versus', ' vs ', 'better', 'worse', 'difference', 'differ',
+  'or should', 'which one', 'which is', 'between', 'both', 'rather than', 'instead of',
+  // Bare "than" plus comparative adjectives: "is this September wetter than
+  // normal" is a comparison even though no second place is named.
+  ' than ', 'wetter', 'drier', 'dryer', 'hotter', 'colder', 'warmer', 'cooler',
+  'heavier', 'stronger', 'more rain', 'less rain',
+  'तुलना', 'बेहतर', 'में से', 'से ज्यादा', 'से अधिक', 'কোনটি', 'তুলনা', 'ভালো',
+  'ஒப்பீடு', 'சிறந்த', 'పోలిక', 'మంచిది', 'तुलनेत', 'चांगले',
+];
+
+/**
+ * Substring matching is unsafe for short Indic terms.
+ *
+ * The Hindi word for "or" is "या", which occurs inside "क्या" — the ordinary
+ * question marker. Plain `includes()` therefore flagged "कल बारिश होगी क्या?"
+ * ("will it rain tomorrow?") as a comparison and escalated a simple question to
+ * the language model.
+ *
+ * Boundaries must exclude combining marks as well as letters: "क्या" is
+ * क + ् + य + ा, so the character before "या" is a virama (a Mark, not a
+ * Letter). Checking only `\p{L}` would still match.
+ */
+function containsTerm(haystack, term) {
+  if (/^[\x20-\x7F]+$/.test(term)) return haystack.includes(term);
+  const re = new RegExp(`(^|[^\\p{L}\\p{M}])${escapeRegex(term)}($|[^\\p{L}\\p{M}])`, 'u');
+  return re.test(haystack);
+}
+
+const hasAny = (haystack, terms) => terms.some((term) => containsTerm(haystack, term));
+
+/**
+ * Terms anchoring a question in the observed past, and in the forecast future.
+ *
+ * A query touching both needs two different datasets — the climate archive and
+ * the forecast — so it cannot be served by a single handler. This is the signal
+ * that catches "is this September wetter than normal, and will next week
+ * continue the trend?", which scores high confidence on the climate intent and
+ * would otherwise be answered only halfway.
+ */
+const HISTORICAL = [
+  'normal', 'average', 'usual', 'typical', 'trend', 'historical', 'historically',
+  'last year', 'last month', 'past', 'previous', 'record', 'compared to', 'so far',
+  'सामान्य', 'औसत', 'पिछले', 'प्रवृत्ति', 'স্বাভাবিক', 'গড়', 'সাধারণ',
+  'சராசரி', 'வழக்கமான', 'సగటు', 'సాధారణ', 'सरासरी',
+];
+
+const FUTURE = [
+  'will', 'going to', 'next week', 'next month', 'coming', 'tomorrow', 'forecast',
+  'ahead', 'continue', 'expect', 'later',
+  'होगा', 'होगी', 'अगले', 'कल', 'आगे', 'হবে', 'আগামী', 'পরবর্তী',
+  'வருமா', 'நாளை', 'அடுத்த', 'రేపు', 'తదుపరి', 'उद्या', 'पुढील',
+];
+
+const PERSONAL_CONTEXT = [
+  'i have', 'i am', "i'm", 'my ', 'we have', 'we are', 'should i', 'can i', 'is it safe',
+  'is it ok', 'good idea', 'advise me', 'help me', 'suggest', 'recommend', 'plan',
+  'asthma', 'allergy', 'wedding', 'travel', 'trip', 'journey', 'match', 'event',
+  'मुझे', 'मेरा', 'मेरी', 'मेरे', 'क्या मैं', 'सलाह', 'आमार', 'আমার', 'আমি',
+  'எனக்கு', 'என்', 'నాకు', 'నా ', 'मला', 'माझा', 'माझी',
+];
+
+const REASONING = [
+  'why', 'how come', 'what does it mean', 'explain', 'because', 'reason',
+  'क्यों', 'कारण', 'समझाएं', 'কেন', 'কারণ', 'ஏன்', 'ఎందుకు', 'का कारण',
+];
+
+/**
+ * Decide whether a query needs the language-model path.
+ *
+ * Runs on the deterministic parse, so routing itself costs nothing.
+ *
+ * @param {string} text raw query
+ * @param {object} parsed result of `parseQuery`
+ * @returns {{ needsLlm: boolean, reasons: string[], places: object[] }}
+ */
+export function assessComplexity(text, parsed) {
+  const haystack = ` ${String(text ?? '').toLowerCase().normalize('NFKC')} `;
+  const reasons = [];
+
+  const places = scanAllPlaces(text);
+  if (places.length > 1) reasons.push('multiple-locations');
+
+  if (hasAny(haystack, COMPARATIVE)) reasons.push('comparative');
+  if (hasAny(haystack, PERSONAL_CONTEXT)) reasons.push('personal-context');
+  if (hasAny(haystack, REASONING)) reasons.push('explanation');
+
+  // Past *and* future in one question means two datasets, so no single
+  // deterministic handler can answer it completely.
+  if (hasAny(haystack, HISTORICAL) && hasAny(haystack, FUTURE)) {
+    reasons.push('spans-past-and-future');
+  }
+
+  // Two clauses joined by "and" where the second starts its own question.
+  if (/\band\s+(will|is|are|was|were|can|could|should|do|does|did|what|how|why|when)\b/.test(haystack)) {
+    reasons.push('conjoined-clauses');
+  }
+
+  // The parser could not classify it at all.
+  if (parsed.intent === INTENTS.UNKNOWN) reasons.push('unclassified');
+
+  // Weak classification on a sentence long enough to carry real nuance.
+  const wordCount = String(text ?? '').trim().split(/\s+/).length;
+  if (parsed.confidence < 0.7 && wordCount >= 6) reasons.push('low-confidence');
+
+  // Two distinct question clauses — "is it wetter than normal, and will it continue?"
+  if ((text.match(/\?/g) ?? []).length > 1) reasons.push('multi-clause');
+
+  return { needsLlm: reasons.length > 0, reasons, places };
 }
 
 export const __testables = { LEX, cleanCandidate, extractDayOffset, extractHorizon };

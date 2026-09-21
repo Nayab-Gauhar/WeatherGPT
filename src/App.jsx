@@ -50,6 +50,9 @@ export default function App() {
 
   const [messages, setMessages] = useState(() => [welcomeMessage(saved.lang ?? DEFAULT_LANG)]);
   const [busy, setBusy] = useState(false);
+  // What the assistant is doing right now. Tier 2 makes several network calls,
+  // so naming the current one keeps a 1-3s wait from feeling like a stall.
+  const [step, setStep] = useState(null);
   const [locating, setLocating] = useState(false);
   const [place, setPlace] = useState(null);
 
@@ -81,11 +84,13 @@ export default function App() {
       stopSpeaking();
       setMessages((prev) => [...prev, userMessage(query, { lang, display })]);
       setBusy(true);
+      setStep(null);
 
       try {
         const { message, context } = await respond(query, {
           lang,
           context: { ...contextRef.current, model },
+          onStep: ({ label }) => setStep(label),
         });
 
         contextRef.current = context;
@@ -98,6 +103,7 @@ export default function App() {
         }
       } finally {
         setBusy(false);
+        setStep(null);
       }
     },
     [busy, lang, model, autoSpeak],
@@ -215,6 +221,7 @@ export default function App() {
           <ChatPanel
             messages={messages}
             busy={busy}
+            step={step}
             lang={lang}
             starters={starterChips(lang)}
             onSend={send}

@@ -41,7 +41,14 @@ export default function BlockRenderer({ block, lang }) {
     case 'aqi':
       return <AqiCard air={block.air} place={block.place} lang={lang} />;
     case 'climate':
-      return <ClimateCard climate={block.climate} place={block.place} lang={lang} />;
+      return (
+        <ClimateCard
+          climate={block.climate}
+          place={block.place}
+          monthToDate={block.monthToDate}
+          lang={lang}
+        />
+      );
     case 'models':
       return <ModelsCard comparison={block.comparison} place={block.place} lang={lang} />;
     case 'sector':

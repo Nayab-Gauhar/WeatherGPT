@@ -6,7 +6,7 @@ import { t } from '../i18n/index.js';
 import './ChatPanel.css';
 
 /** Three-dot "assistant is working" affordance. */
-function Thinking({ lang }) {
+function Thinking({ lang, step }) {
   return (
     <div className="msg msg--bot">
       <div className="msg__lead">
@@ -24,7 +24,7 @@ function Thinking({ lang }) {
             <i />
             <i />
           </span>
-          {t('thinking', lang)}
+          {step ?? t('thinking', lang)}
         </p>
       </div>
     </div>
@@ -37,7 +37,7 @@ function Thinking({ lang }) {
  * Owns scroll behaviour and layout only; all interpretation happens upstream in
  * the orchestrator, and all rendering of data happens downstream in the cards.
  */
-export default function ChatPanel({ messages, busy, lang, starters, onSend, onChipClick }) {
+export default function ChatPanel({ messages, busy, step, lang, starters, onSend, onChipClick }) {
   const scrollRef = useRef(null);
   const endRef = useRef(null);
 
@@ -66,7 +66,7 @@ export default function ChatPanel({ messages, busy, lang, starters, onSend, onCh
             <Message key={message.id} message={message} lang={lang} onChipClick={onChipClick} />
           ))}
 
-          {busy && <Thinking lang={lang} />}
+          {busy && <Thinking lang={lang} step={step} />}
 
           {starters?.length > 0 && messages.length <= 1 && !busy && (
             <div className="chips chips--starters">

@@ -7,7 +7,7 @@ import { t } from '../../i18n/index.js';
  * the comparison is seasonally fair, and states the least-squares trend per
  * decade rather than leaving the reader to eyeball it.
  */
-export default function ClimateCard({ climate, place, lang }) {
+export default function ClimateCard({ climate, place, monthToDate, lang }) {
   const series = climate.series ?? [];
   if (series.length < 2) {
     return (
@@ -74,6 +74,21 @@ export default function ClimateCard({ climate, place, lang }) {
         </div>
       </div>
 
+      {/*
+        How the month is actually running against its own normal. Pro-rated to
+        the days elapsed, otherwise a month measured on the 5th would always
+        look catastrophically dry.
+      */}
+      {monthToDate?.percent_of_normal != null && (
+        <p className={`climate__mtd${mtdTone(monthToDate.percent_of_normal)}`}>
+          <strong>
+            {climate.monthName} so far ({monthToDate.days_elapsed} days):
+          </strong>{' '}
+          {monthToDate.observed_rain_mm} mm against {monthToDate.expected_rain_by_now_mm} mm normal
+          by now — <strong>{monthToDate.percent_of_normal}%</strong> of normal
+        </p>
+      )}
+
       <figure className="climate__chart">
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
           <path className="climate__area" d={area} />
@@ -98,4 +113,11 @@ export default function ClimateCard({ climate, place, lang }) {
       </p>
     </article>
   );
+}
+
+/** Colour the month-to-date line by how far it departs from normal. */
+function mtdTone(pct) {
+  if (pct >= 125) return ' is-wet';
+  if (pct <= 75) return ' is-dry';
+  return '';
 }

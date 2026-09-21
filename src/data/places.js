@@ -441,6 +441,36 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Every distinct known place mentioned in a sentence.
+ *
+ * Used to detect compound questions — "compare Kolkata and Mumbai" needs a
+ * different execution path from "weather in Kolkata", and the cheapest reliable
+ * signal is simply that two places were named.
+ *
+ * Overlapping matches collapse to the longest, so "New Delhi" counts once
+ * rather than also matching "Delhi".
+ */
+export function scanAllPlaces(text) {
+  const haystack = norm(text);
+  const hits = [];
+
+  for (const [key, record] of INDEX) {
+    if (key.length < 3) continue;
+    const boundary = new RegExp(`(^|[^\\p{L}])${escapeRegex(key)}($|[^\\p{L}])`, 'u');
+    if (boundary.test(haystack)) hits.push({ key, record });
+  }
+
+  // Drop any hit whose key is a substring of a longer hit.
+  const longest = hits.filter(
+    (hit) => !hits.some((other) => other !== hit && other.key.includes(hit.key)),
+  );
+
+  const unique = new Map();
+  for (const { record } of longest) unique.set(record.name, record);
+  return [...unique.values()];
+}
+
 export const PLACE_NAMES = ALL.map((p) => p.name);
 
 /* ------------------------------------------------- localised display names -- */

@@ -2,7 +2,16 @@ import { useEffect, useRef } from 'react';
 
 import { LANGUAGES, coverage, t } from '../i18n/index.js';
 import { NWP_MODELS } from '../services/openMeteo.js';
-import { canSpeak, sttSupported, ttsSupported } from '../services/speech.js';
+import { canSpeak, sttSupported, ttsSupported, inputEngine, outputEngine } from '../services/speech.js';
+import { isGeminiConfigured } from '../services/gemini.js';
+
+/** Human-readable provider names for the voice engines. */
+const ENGINE_LABELS = {
+  sarvam: 'Sarvam AI',
+  deepgram: 'Deepgram Aura 2',
+  webspeech: 'browser built-in',
+  none: 'unavailable',
+};
 import { CheckIcon, CloseIcon } from './Icons.jsx';
 
 /**
@@ -114,19 +123,40 @@ export default function SettingsMenu({
             type="checkbox"
             checked={autoSpeak}
             onChange={(e) => onAutoSpeakChange(e.target.checked)}
-            disabled={!ttsSupported}
+            disabled={!ttsSupported && outputEngine(lang) === 'none'}
           />
           <span>Read answers aloud automatically</span>
         </label>
+
+        {/*
+          Naming the actual engine is more useful than a generic "supported"
+          message: whether Hindi speech is handled by Sarvam or by the browser's
+          own voice makes a large, audible difference.
+        */}
+        <ul className="settings__engines">
+          <li>
+            <span>Listening</span>
+            <strong>{ENGINE_LABELS[inputEngine(lang)]}</strong>
+          </li>
+          <li>
+            <span>Speaking</span>
+            <strong>{ENGINE_LABELS[outputEngine(lang)]}</strong>
+          </li>
+          <li>
+            <span>Open-ended questions</span>
+            <strong>{isGeminiConfigured ? 'Gemini 2.5 Flash' : 'local parser only'}</strong>
+          </li>
+        </ul>
+
         <p className="settings__hint">
-          {sttSupported
-            ? 'Voice input is available on this browser.'
-            : 'Voice input needs a Chromium-based or Safari browser.'}
-          {ttsSupported
-            ? canSpeak(lang)
-              ? ' A voice is installed for the selected language.'
-              : ' No system voice is installed for the selected language, so playback may fall back to English.'
-            : ' Speech playback is unavailable on this browser.'}
+          {!sttSupported && 'Voice input is unavailable in this browser. '}
+          {inputEngine(lang) === 'webspeech' &&
+            'Using the browser engine, which is less accurate for Indian languages — add a Sarvam key to improve it. '}
+          {outputEngine(lang) === 'webspeech' &&
+            !canSpeak(lang) &&
+            'No system voice is installed for this language, so playback may fall back to English. '}
+          {!isGeminiConfigured &&
+            'Without a Gemini key, comparisons and open-ended questions fall back to the standard forecast answer.'}
         </p>
       </section>
     </div>
