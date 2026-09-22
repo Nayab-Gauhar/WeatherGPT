@@ -1,6 +1,8 @@
 import { useState } from 'react';
 
 import SettingsMenu from './SettingsMenu.jsx';
+import AccountMenu from './AccountMenu.jsx';
+import SavedPlaces from './SavedPlaces.jsx';
 import { GridIcon, MoonIcon, SunIcon } from './Icons.jsx';
 import { t, getLanguage } from '../i18n/index.js';
 import './Header.css';
@@ -11,6 +13,9 @@ import './Header.css';
 export default function Header({
   lang,
   onLangChange,
+  place,
+  account,
+  onSelectSaved,
   theme,
   onThemeToggle,
   model,
@@ -31,6 +36,18 @@ export default function Header({
       </div>
 
       <div className="appbar__actions">
+        <SavedPlaces
+          place={place}
+          savedPlaces={account?.savedPlaces ?? []}
+          onSave={account?.savePlace}
+          onRemove={account?.removePlace}
+          onSelect={onSelectSaved}
+          isSignedIn={account?.isSignedIn ?? false}
+          isConfigured={account?.isConfigured ?? false}
+          syncing={account?.syncing ?? false}
+          lang={lang}
+        />
+
         <button
           type="button"
           className="appbar__lang"
@@ -75,9 +92,14 @@ export default function Header({
           />
         </div>
 
-        <span className="appbar__avatar" aria-hidden="true">
-          N
-        </span>
+        <AccountMenu />
+
+        {/* Placeholder identity mark, shown only when auth is not configured. */}
+        {!account?.isConfigured && (
+          <span className="appbar__avatar" aria-hidden="true">
+            N
+          </span>
+        )}
       </div>
     </header>
   );

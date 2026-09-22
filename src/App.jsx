@@ -9,6 +9,8 @@ import { speak, stopSpeaking } from './services/speech.js';
 import { starterChips } from './i18n/chips.js';
 import { DEFAULT_LANG, t } from './i18n/index.js';
 import { findPlace } from './data/places.js';
+import AuthProvider from './auth/AuthProvider.jsx';
+import { useAccount } from './auth/useAccount.js';
 import './App.css';
 import './components/blocks/blocks.css';
 
@@ -39,14 +41,39 @@ function savePrefs(prefs) {
   }
 }
 
-export default function App() {
-  const saved = useRef(loadPrefs()).current;
+/**
+ * Outer shell.
+ *
+ * Theme lives here so it can be handed to the Clerk provider (its modals must
+ * match the app, not flash white in dark mode) while also being available to the
+ * inner app. Everything that may call a Clerk hook is inside AuthProvider.
+ */
+export default function App({ initialTheme = 'light' }) {
+  /*
+   * Read stored preferences exactly once, via a lazy state initialiser.
+   *
+   * A ref would also hold the value, but reading `.current` during render to pass
+   * it downward is the pattern React's lint rules warn about — state is the
+   * correct tool for a value that participates in rendering, even one that never
+   * changes.
+   */
+  const [saved] = useState(loadPrefs);
+  const [theme, setTheme] = useState(saved.theme ?? initialTheme);
 
+  return (
+    <AuthProvider theme={theme}>
+      <WeatherGPT saved={saved} theme={theme} onThemeChange={setTheme} />
+    </AuthProvider>
+  );
+}
+
+function WeatherGPT({ saved, theme, onThemeChange }) {
   const [lang, setLang] = useState(saved.lang ?? DEFAULT_LANG);
-  const [theme, setTheme] = useState(saved.theme ?? 'light');
   const [model, setModel] = useState(saved.model ?? 'best_match');
   const [autoSpeak, setAutoSpeak] = useState(saved.autoSpeak ?? false);
   const [mapMode, setMapMode] = useState(saved.mapMode ?? '3d');
+
+  const account = useAccount();
 
   const [messages, setMessages] = useState(() => [welcomeMessage(saved.lang ?? DEFAULT_LANG)]);
   const [busy, setBusy] = useState(false);
@@ -72,7 +99,32 @@ export default function App() {
 
   useEffect(() => {
     savePrefs({ lang, theme, model, autoSpeak, mapMode });
+    // Mirror to the account so settings follow the user to another device.
+    // No-op when signed out.
+    account.savePrefs({ lang, theme, model, autoSpeak, mapMode });
+    // `account` is intentionally excluded: its identity changes on every Clerk
+    // refresh, and re-running this effect for that would write on a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang, theme, model, autoSpeak, mapMode]);
+
+  /*
+   * Adopt account preferences once, on sign-in.
+   *
+   * Only applied when the account actually holds preferences, and only once, so
+   * a signed-in user changing the theme on this device is not immediately
+   * reverted by their stored copy.
+   */
+  const adoptedPrefs = useRef(false);
+  useEffect(() => {
+    if (adoptedPrefs.current || !account.isSignedIn || !account.remotePrefs) return;
+    adoptedPrefs.current = true;
+    const remote = account.remotePrefs;
+    if (remote.lang) setLang(remote.lang);
+    if (remote.theme) onThemeChange(remote.theme);
+    if (remote.model) setModel(remote.model);
+    if (typeof remote.autoSpeak === 'boolean') setAutoSpeak(remote.autoSpeak);
+    if (remote.mapMode) setMapMode(remote.mapMode);
+  }, [account.isSignedIn, account.remotePrefs, onThemeChange]);
 
   /* ----------------------------------------------------------------- sending -- */
 
@@ -181,6 +233,16 @@ export default function App() {
 
   const handleChip = useCallback((chip) => send(chip.query, { display: chip.label }), [send]);
 
+  /** Picking a saved place moves the globe there and asks about it. */
+  const handleSelectSaved = useCallback(
+    (savedPlace) => {
+      setPlace(savedPlace);
+      contextRef.current = { ...contextRef.current, place: savedPlace };
+      send(`current weather in ${savedPlace.name}`, { display: savedPlace.name });
+    },
+    [send],
+  );
+
   const handleLangChange = useCallback((next) => {
     setLang(next);
     contextRef.current = { ...contextRef.current, lang: next };
@@ -192,8 +254,11 @@ export default function App() {
       <Header
         lang={lang}
         onLangChange={handleLangChange}
+        place={place}
+        account={account}
+        onSelectSaved={handleSelectSaved}
         theme={theme}
-        onThemeToggle={() => setTheme((v) => (v === 'dark' ? 'light' : 'dark'))}
+        onThemeToggle={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}
         model={model}
         onModelChange={setModel}
         autoSpeak={autoSpeak}

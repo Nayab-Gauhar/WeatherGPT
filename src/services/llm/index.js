@@ -64,7 +64,20 @@ export function llmStatus() {
 
 const MAX_ITERATIONS = 4;
 const MAX_TOOL_CALLS = 8;
-const TOTAL_BUDGET_MS = 24_000;
+const TOTAL_BUDGET_MS = 30_000;
+
+/**
+ * Time held back for each remaining provider.
+ *
+ * Without this the budget was shared, and a first provider that fails *slowly* —
+ * Gemini retrying across five models on 429s — consumed the whole allowance, so
+ * the fallback was skipped and the answer dropped to Tier 1. Having a second
+ * provider is pointless if the first is allowed to starve it.
+ *
+ * Eleven seconds is enough for two round trips plus tool execution, measured
+ * against the slower provider.
+ */
+const RESERVE_PER_FALLBACK_MS = 11_000;
 
 /* ------------------------------------------------------------ instruction -- */
 
@@ -131,19 +144,41 @@ export async function runLlmTurn(userText, { lang = 'en', place = null, model, o
   const turns = [{ role: 'user', text: `${preamble}${userText}` }];
   const blocks = [];
   const toolCalls = [];
-  const executed = new Set();
   let resolvedPlace = place;
   let lastError = 'unknown';
 
-  for (const provider of providers) {
-    // Each provider restarts from the user's question, but keeps any data
-    // already fetched — the tool cache makes the retry cheap.
+  for (const [index, provider] of providers.entries()) {
+    // Leave enough of the overall budget for the providers still queued behind
+    // this one.
+    const fallbacksLeft = providers.length - 1 - index;
+    const providerDeadline = deadline - fallbacksLeft * RESERVE_PER_FALLBACK_MS;
+    if (Date.now() >= providerDeadline) {
+      lastError = 'timeout';
+      continue;
+    }
+
+    // Each provider restarts from the user's question with its own conversation.
     const providerTurns = turns.slice(0, 1);
+
+    /*
+     * Deduplication is per provider, not global.
+     *
+     * The set exists to stop one provider looping on an identical call. Sharing
+     * it across providers was a bug: when the first provider fetched data and
+     * then failed, the second started with an empty transcript, re-requested the
+     * same tools, and received "already requested" instead of the data — so it
+     * correctly but uselessly reported that it had no data to answer from, even
+     * though the cards below its answer were fully populated.
+     *
+     * Re-fetching costs almost nothing because the upstream responses are cached
+     * for ten minutes.
+     */
+    const executed = new Set();
 
     try {
       const result = await runWithProvider(provider, providerTurns, {
         system,
-        deadline,
+        deadline: providerDeadline,
         lang,
         model,
         onStep,
@@ -172,7 +207,7 @@ export async function runLlmTurn(userText, { lang = 'en', place = null, model, o
       lastError = classifyError(error);
     }
 
-    if (Date.now() > deadline) break;
+    if (Date.now() >= deadline) break;
   }
 
   return {

@@ -32,6 +32,7 @@ cp .env.example .env.local     # then fill in what you have
 | `VITE_GEMINI_API_KEY` | Answers to open-ended and comparative questions ([AI Studio](https://aistudio.google.com/apikey)) |
 | `VITE_SARVAM_API_KEY` | Accurate Indian-language speech in and out ([Sarvam](https://dashboard.sarvam.ai)) |
 | `VITE_DEEPGRAM_API_KEY` | Higher-quality English speech ([Deepgram](https://console.deepgram.com)) |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Sign-in, so saved places and settings follow the user across devices ([Clerk](https://dashboard.clerk.com)) |
 
 > ⚠️ Vite inlines `VITE_*` variables into the client bundle, so these keys are
 > readable by anyone who loads the page. Fine for local development and demos;
@@ -60,6 +61,7 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 | **Multilingual** | 10 languages. The reply language follows the *question*, not a setting. |
 | **Climate analysis** | 15 years of ERA5 reanalysis with least-squares trends per decade. |
 | **Voice** | Ask by speaking and hear the answer read back — Sarvam for Indian languages, Deepgram for English, browser Web Speech as fallback. |
+| **Saved places** | Pin the places you check daily. Local by default; synced to your account when signed in. |
 | **Sector advisories** | Agriculture, aviation, marine and urban/disaster decision support. |
 
 ---
@@ -153,6 +155,11 @@ src/
 │   └── voice/
 │       ├── sarvam.js        Indian-language STT (saarika) + TTS (bulbul)
 │       └── deepgram.js      English TTS (aura-2)
+├── auth/
+│   ├── config.js            publishable key + a single "is auth available" flag
+│   ├── AuthProvider.jsx     mounts Clerk only when configured
+│   ├── useAccount.js        one interface for signed-in / signed-out / no-auth
+│   └── savedPlacesStore.js  external store for the signed-out case
 ├── i18n/                    languages, UI labels, templates, grammar
 ├── data/                    WMO codes, curated gazetteer
 └── utils/format.js          timezone-safe formatting
@@ -291,6 +298,40 @@ mistakes here are silent:
   silently turning it into the North Pole would answer a question nobody asked.
 - **Parsing is strict about intent.** Six notations are accepted, but "7 day
   forecast" and "next 24 hours" must never be read as a position.
+
+### Authentication is additive, never a gate
+
+Sign-in is provided by Clerk, and the guiding rule is that **nothing about
+answering a weather question depends on knowing who is asking**. A farmer
+checking whether to spray tomorrow must never meet a sign-in wall.
+
+That is not just a policy, it is a structural constraint. Clerk's provider throws
+`Missing publishableKey` when instantiated without one, so wrapping the app
+unconditionally — which is what the setup CLI does — turns a checkout without a
+key into a blank page. `AuthProvider` therefore mounts Clerk only when a key is
+present, and `useAccount` exposes the same interface either way, so no component
+contains a branch on whether auth exists.
+
+What an account actually buys the user is saved places and preferences that
+follow them to another device. Signing out does not delete anything, and places
+saved *before* signing up are merged into the account rather than discarded.
+
+Storage uses Clerk's `unsafeMetadata`, the only metadata field writable from the
+browser — which is what makes per-user data possible with no backend at all. The
+name is a warning worth heeding: the user can modify it themselves, so it is
+right for saved places and display settings and wrong for anything granting
+access. Nothing stored there is trusted for authorisation.
+
+Three failure modes are handled explicitly, because each is silent otherwise:
+
+| Situation | Behaviour |
+|---|---|
+| No key configured | Auth controls hidden; saved places kept in this browser |
+| Key present, Clerk loading | Placeholder holds the space so the header does not jump |
+| Key wrong or revoked | Visible "check VITE_CLERK_PUBLISHABLE_KEY" notice, app fully usable |
+
+All three were verified in a browser, including that the weather app keeps working
+with an unreachable Clerk backend.
 
 ### Voice is the accessibility feature, not a gimmick
 
@@ -438,6 +479,12 @@ than one that admits its edges:
   when it happens. Billing lifts the limit.
 - **API keys ship in the client bundle.** Vite inlines `VITE_*` at build time.
   Acceptable for local use, not for public deployment — see the gateway below.
+  The Clerk *publishable* key is the exception: it is designed to be public.
+- **Sign-in has not been exercised against a live Clerk application.** The
+  provider, controls, metadata sync and all three failure states were verified,
+  including with a deliberately unreachable key, but no real account existed to
+  complete a sign-up round trip. Clerk's CLI cannot provision keys for React
+  without an interactive login, so that step needs the project owner.
 - **No WRF.** The problem statement names GFS/WRF; GFS is integrated directly.
   WRF is a regional model an agency runs itself, so it would arrive as an
   in-house gridded feed — that belongs behind the gateway described below,
