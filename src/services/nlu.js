@@ -21,12 +21,13 @@
  * Its ceiling is structural, though: a single `location` field cannot express
  * "compare Kolkata and Mumbai". `assessComplexity()` at the bottom of this file
  * detects the questions that exceed it and hands them to Tier 2
- * (`services/gemini.js`), which uses tool calling and can. Tier 1 remains the
+ * (`services/llm/`), which uses tool calling and can. Tier 1 remains the
  * fallback whenever Tier 2 is unavailable.
  */
 
 import { SCRIPT_RANGES, DEFAULT_LANG } from '../i18n/languages.js';
-import { scanForPlace, scanAllPlaces } from '../data/places.js';
+import { scanForPlace, scanAllPlaces, INDIC_SUFFIXES } from '../data/places.js';
+import { parseCoordinates } from '../utils/coords.js';
 
 export const INTENTS = {
   CURRENT: 'current',
@@ -234,6 +235,42 @@ const LEX = {
     dayAfter: ['മറ്റന്നാൾ'],
   },
 
+  /**
+   * Hinglish — Hindi (and other Indian languages) typed in the Latin alphabet.
+   *
+   * This is how a very large share of Indian users actually write: "Kolkata ka
+   * mausam kaisa hai", "kal barish hogi kya". Because it is Latin script, script
+   * detection alone reads it as English and every keyword lookup misses, so it
+   * needs its own lexicon rather than being folded into `en`.
+   *
+   * Spelling is not standardised, so common variants are listed side by side
+   * (mausam / mosam, barish / baarish, garmi / garam).
+   */
+  hinglish: {
+    current: ['mausam', 'mosam', 'mausham', 'tapman', 'taapman', 'garmi', 'garam', 'thand',
+      'thandi', 'sardi', 'abhi', 'kaisa', 'kaisi', 'kaise', 'haal', 'nami', 'humidity'],
+    forecast: ['anuman', 'agle', 'agla', 'hafte', 'hafta', 'saat din', 'aane wale', 'aage'],
+    rain: ['barish', 'baarish', 'barsat', 'barsaat', 'chhata', 'chhatri', 'chatri', 'monsoon',
+      'mausami', 'bheeg', 'paani girega'],
+    alerts: ['chetavni', 'chetawni', 'alert', 'baadh', 'badh', 'toofan', 'tufan', 'chakravat',
+      'khatra', 'aapda', 'apda', 'loo', 'sheet lahar'],
+    aqi: ['pradushan', 'pradooshan', 'hawa kharab', 'dhuaan', 'dhuan', 'saans', 'pollution'],
+    climate: ['jalvayu', 'ausat', 'samanya', 'badlav', 'pichle saal', 'dashak', 'itihas'],
+    models: ['model', 'sahi', 'satik', 'bharosa', 'kitna sahi'],
+    greeting: ['namaste', 'namaskar', 'hello ji', 'kaun ho', 'kya kar sakte', 'madad karo'],
+    help: ['madad', 'sahayata', 'kaise karu'],
+    sectors: {
+      agriculture: ['kisan', 'kheti', 'fasal', 'phasal', 'krishi', 'buvai', 'bijai', 'katai',
+        'sinchai', 'chidkav', 'chhidkav', 'keetnashak', 'khet', 'dhan', 'gehun', 'gehu'],
+      aviation: ['vimaan', 'viman', 'udaan', 'hawai adda', 'flight', 'pilot'],
+      marine: ['machhli', 'machli', 'macchi', 'samudra', 'samundar', 'nav', 'naav', 'mallah'],
+      urban: ['shehar', 'shahar', 'yatayat', 'traffic', 'jalbharav', 'jal bharav', 'nagar nigam'],
+    },
+    today: ['aaj', 'aj', 'aaj raat'],
+    tomorrow: ['kal', 'kl'],
+    dayAfter: ['parson', 'parso'],
+  },
+
   pa: {
     current: ['ਮੌਸਮ', 'ਤਾਪਮਾਨ', 'ਗਰਮੀ', 'ਠੰਢ', 'ਹੁਣ', 'ਨਮੀ'],
     forecast: ['ਅਨੁਮਾਨ', 'ਅਗਲੇ', 'ਹਫ਼ਤਾ', 'ਸੱਤ ਦਿਨ'],
@@ -258,10 +295,44 @@ const LEX = {
 
 /* ------------------------------------------------------ language detection -- */
 
-/** Detect the language of a query from its script, with English as default. */
+/**
+ * Romanised Indian-language markers — grammatical words, not weather vocabulary.
+ *
+ * Function words are the reliable signal. Content words like "mausam" already
+ * appear in the Hinglish lexicon, but a sentence is Hinglish because of its
+ * *grammar* ("Kolkata **ka** mausam **kaisa hai**"), and grammar words are what
+ * distinguish it from an English sentence that happens to name an Indian thing.
+ */
+const HINGLISH_MARKERS = [
+  'hai', 'hain', 'hai', 'hoga', 'hogi', 'honge', 'tha', 'thi', 'rahega', 'rahegi',
+  'kya', 'kaisa', 'kaisi', 'kaise', 'kitna', 'kitni', 'kab', 'kahan', 'kaun',
+  'batao', 'bataiye', 'bata', 'mujhe', 'mera', 'meri', 'mere', 'humara',
+  'ka', 'ki', 'ke', 'ko', 'mein', 'mai', 'nahi', 'nahin', 'karo', 'chahiye',
+  'aaj', 'kal', 'parson', 'abhi', 'ahe', 'nahi ahe', 'kasa', 'konta',
+];
+
+/**
+ * Detect the language of a query.
+ *
+ * Script identifies the nine Indic languages directly. Latin script needs more
+ * care, because it covers both English and Hinglish — and defaulting Hinglish to
+ * English means every keyword lookup misses and the user gets a fallback message
+ * for a perfectly clear question.
+ */
 export function detectLanguage(text, preferred = DEFAULT_LANG) {
   const hit = SCRIPT_RANGES.find(({ re }) => re.test(text));
-  if (!hit) return /[a-z]/i.test(text) ? (preferred === 'en' ? 'en' : looksEnglish(text) ? 'en' : preferred) : preferred;
+
+  if (!hit) {
+    if (!/[a-z]/i.test(text)) return preferred;
+    // Two markers, or one marker in a short phrase, is enough: "Kolkata ka
+    // mausam" is three words and unambiguous, while a single stray "ka" inside a
+    // long English sentence is not.
+    const haystack = ` ${text.toLowerCase()} `;
+    const markers = HINGLISH_MARKERS.filter((m) => containsTerm(haystack, m)).length;
+    const words = text.trim().split(/\s+/).length;
+    if (markers >= 2 || (markers === 1 && words <= 5)) return 'hinglish';
+    return looksEnglish(text) ? 'en' : preferred === 'en' ? 'en' : preferred;
+  }
 
   // Devanagari is shared by Hindi and Marathi — disambiguate with marker words,
   // otherwise honour the language the user selected in the UI.
@@ -294,11 +365,39 @@ const EN_TRAILERS =
   'today|tomorrow|tonight|now|right now|this week|next week|weather|forecast|please|currently|for me';
 
 /**
+ * Matches "<place><case marker>" in any Indic script, whether the marker is
+ * attached ("কলকাতায়") or spaced ("ਅੰਮ੍ਰਿਤਸਰ ਦਾ").
+ *
+ * Built from the shared suffix list rather than a second hand-written
+ * alternation, which had drifted out of sync and omitted most Gurmukhi markers.
+ *
+ * The trailing lookahead replaces `\b`, which is defined on ASCII word
+ * characters and silently fails after Indic letters and vowel signs — the reason
+ * "ਅੰਮ੍ਰਿਤਸਰ ਦਾ ਮੌਸਮ" previously yielded no location at all.
+ */
+const INDIC_POSTPOSITION_RE = new RegExp(
+  `([\\u0900-\\u0D7F][\\u0900-\\u0D7F\\s]{1,30}?)\\s*(?:${INDIC_SUFFIXES.map((s) =>
+    s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+  ).join('|')})(?![\\p{L}\\p{M}])`,
+  'u',
+);
+
+/**
  * Pull a place name out of the sentence.
  * Order: curated gazetteer scan (handles native scripts and aliases) →
  * preposition patterns → Indic postposition patterns → capitalised residue.
  */
 export function extractLocation(text, lang = 'en') {
+  /*
+   * A pasted coordinate pair is itself a location. Checked first because
+   * "22.57, 88.36" has no name for any other rule to find, and people genuinely
+   * paste positions from maps and field reports.
+   */
+  const coords = parseCoordinates(text);
+  if (coords) {
+    return { place: null, query: text.trim(), method: 'coordinates', coordinates: coords };
+  }
+
   const gazetteer = scanForPlace(text);
   if (gazetteer) return { place: gazetteer, query: gazetteer.name, method: 'gazetteer' };
 
@@ -311,16 +410,34 @@ export function extractLocation(text, lang = 'en') {
     if (cleaned) return { place: null, query: cleaned, method: 'preposition' };
   }
 
-  // Indic postpositions: "नागपुर में", "কলকাতায়", "சென்னையில்", "ನಗರದಲ್ಲಿ"
-  const postposition = text.match(
-    /([\u0900-\u0D7F][\u0900-\u0D7F\s]{1,30}?)\s*(?:में|मे|का|की|के|ला|मध्ये|चा|ची|এ|তে|য়|এর|র|ইল|இல்|ல்|க்கு|లో|కి|ನಲ್ಲಿ|ದಲ್ಲಿ|ൽ|ില്|ਵਿੱਚ|માં)\b/u,
-  );
+  // Indic postpositions: "नागपुर में", "কলকাতায়", "சென்னையில்", "ਅੰਮ੍ਰਿਤਸਰ ਦਾ"
+  const postposition = text.match(INDIC_POSTPOSITION_RE);
   if (postposition) {
     const candidate = postposition[1].trim();
     const known = scanForPlace(candidate);
     if (known) return { place: known, query: known.name, method: 'gazetteer' };
     const cleaned = cleanCandidate(candidate, lang);
     if (cleaned) return { place: null, query: cleaned, method: 'postposition' };
+  }
+
+  /*
+   * Romanised postpositions: "nagpur ka mausam", "puri mein barish".
+   *
+   * Hinglish is written in the Latin alphabet, so neither the Indic pattern above
+   * nor the capitalised-token rule below reliably applies — users typically type
+   * place names in lower case. The case marker that follows the place is the
+   * dependable cue.
+   */
+  const romanPost = text.match(
+    /\b([a-z][a-z\s'-]{2,28}?)\s+(?:ka|ki|ke|ko|mein|me|ma|mai)\b/i,
+  );
+  if (romanPost) {
+    const cleaned = cleanCandidate(romanPost[1], lang);
+    if (cleaned && !HINGLISH_MARKERS.includes(cleaned.toLowerCase())) {
+      const known = scanForPlace(cleaned);
+      if (known) return { place: known, query: known.name, method: 'gazetteer' };
+      return { place: null, query: cleaned, method: 'roman-postposition' };
+    }
   }
 
   // Capitalised token(s) that are not sentence-initial keywords.
@@ -333,22 +450,94 @@ export function extractLocation(text, lang = 'en') {
   const candidate = caps.find((c) => !stop.has(c));
   if (candidate) return { place: null, query: candidate, method: 'capitalised' };
 
+  /*
+   * Final fallback for Indic scripts: the longest word that is not a known
+   * keyword.
+   *
+   * Many languages place a bare noun beside the place with no case marker at all
+   * — "കോഴിക്കോട്ട് മഴ" (Kozhikode rain), "पुणे पाऊस" — so the postposition
+   * pattern above finds nothing and the capitalised-token rule cannot help
+   * outside the Latin alphabet. Removing the words we recognise as weather
+   * vocabulary usually leaves exactly the place name.
+   */
+  const indicTokens = text
+    .split(/[^\p{L}\p{M}\p{N}]+/u)
+    .filter((token) => /[\u0900-\u0D7F]/.test(token) && token.length >= 3);
+
+  if (indicTokens.length) {
+    const noise = noiseTerms(lang);
+    const residual = indicTokens
+      .filter((token) => !noise.some((n) => containsTerm(token.toLowerCase(), n.toLowerCase())))
+      .sort((a, b) => b.length - a.length);
+    if (residual.length) return { place: null, query: residual[0], method: 'residual-token' };
+  }
+
   return { place: null, query: null, method: 'none' };
 }
 
-/** Strip intent keywords from a candidate place string. */
-function cleanCandidate(raw, lang) {
+/**
+ * Function words — verbs, copulas, question words and pronouns.
+ *
+ * Needed because the residual-token heuristic picks the longest unrecognised
+ * word, and without this list "बारिश होगी क्या?" ("will it rain?") offered
+ * "होगी" ("will be") as a place name and sent it to the geocoder.
+ */
+const INDIC_STOPWORDS = [
+  // Devanagari (Hindi / Marathi)
+  'है', 'हैं', 'था', 'थी', 'थे', 'होगा', 'होगी', 'होंगे', 'हुआ', 'रहा', 'रही', 'रहे',
+  'रहेगा', 'रहेगी', 'क्या', 'कैसा', 'कैसी', 'कैसे', 'कितना', 'कितनी', 'कब', 'कहाँ',
+  'बताओ', 'बताइए', 'मुझे', 'मेरा', 'मेरी', 'मेरे', 'नहीं', 'और', 'लिए', 'साथ',
+  'आहे', 'नाही', 'काय', 'कसे', 'कशी', 'कसा', 'सांगा', 'पडेल', 'होईल', 'किती',
+  // Bengali
+  'আছে', 'ছিল', 'হবে', 'হয়', 'হচ্ছে', 'কেমন', 'কি', 'কী', 'কত', 'কখন', 'কোথায়',
+  'বলুন', 'আমার', 'আমি', 'এবং', 'না', 'জন্য',
+  // Tamil
+  'உள்ளது', 'இருக்கிறது', 'இருக்கும்', 'எப்படி', 'என்ன', 'எவ்வளவு', 'எப்போது',
+  'வருமா', 'சொல்லுங்கள்', 'எனக்கு',
+  // Telugu
+  'ఉంది', 'ఉంటుంది', 'ఎలా', 'ఏమి', 'ఎంత', 'ఎప్పుడు', 'చెప్పండి', 'పడుతుందా', 'నాకు',
+  // Kannada
+  'ಇದೆ', 'ಇರುತ್ತದೆ', 'ಹೇಗೆ', 'ಏನು', 'ಎಷ್ಟು', 'ಯಾವಾಗ', 'ಹೇಳಿ', 'ನನಗೆ',
+  // Malayalam
+  'ഉണ്ട്', 'ഉണ്ടാകുമോ', 'എങ്ങനെ', 'എന്ത്', 'എത്ര', 'എപ്പോൾ', 'പറയുക', 'എനിക്ക്',
+  // Gujarati
+  'છે', 'હશે', 'કેવું', 'શું', 'કેટલું', 'ક્યારે', 'કહો', 'મને', 'પડશે',
+  // Gurmukhi
+  'ਹੈ', 'ਹਨ', 'ਹੋਵੇਗਾ', 'ਕਿਵੇਂ', 'ਕੀ', 'ਕਿੰਨਾ', 'ਕਦੋਂ', 'ਦੱਸੋ', 'ਮੈਨੂੰ',
+];
+
+/** Weather vocabulary and function words that must never be read as a place. */
+function noiseTerms(lang) {
   const lex = LEX[lang] ?? LEX.en;
-  const noise = [
+  return [
     ...(lex.current ?? []), ...(lex.forecast ?? []), ...(lex.rain ?? []), ...(lex.alerts ?? []),
     ...(lex.aqi ?? []), ...(lex.climate ?? []), ...(lex.models ?? []),
     ...(lex.today ?? []), ...(lex.tomorrow ?? []), ...(lex.dayAfter ?? []),
+    // Sector vocabulary is a common false positive: "kisan ke liye fasal salah"
+    // ("crop advice for farmers") offered "kisan" — farmer — as a place name.
+    ...Object.values(lex.sectors ?? {}).flat(),
+    ...INDIC_STOPWORDS,
     'district', 'city', 'town', 'village', 'area', 'region',
   ];
-  let out = raw.trim();
-  for (const n of noise) {
-    out = out.replace(new RegExp(`\\b${escapeRegex(n)}\\b`, 'gi'), ' ');
+}
+
+/**
+ * Strip intent keywords from a candidate place string.
+ *
+ * Uses the shared boundary-aware matcher rather than `\b`, which is defined on
+ * ASCII word characters and therefore never fired for Indic keywords.
+ */
+function cleanCandidate(raw, lang) {
+  let out = String(raw).trim();
+
+  for (const term of noiseTerms(lang)) {
+    const escaped = escapeRegex(term);
+    const pattern = /^[\x20-\x7F]+$/.test(term)
+      ? new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'gi')
+      : new RegExp(`(^|[^\\p{L}\\p{M}])${escaped}($|[^\\p{L}\\p{M}])`, 'gu');
+    out = out.replace(pattern, '$1 $2');
   }
+
   out = out.replace(/\s+/g, ' ').replace(/^[\s,.-]+|[\s,.-]+$/g, '');
   return out.length >= 2 ? out : null;
 }
@@ -359,11 +548,43 @@ function escapeRegex(s) {
 
 /* ------------------------------------------------------------------ parser -- */
 
+/**
+ * Boundary-aware term matching, used by every lexicon check in this file.
+ *
+ * Plain `includes()` is unsafe in both scripts this parser handles, and the
+ * failures are not hypothetical:
+ *
+ *   - "hi" (a greeting) occurs inside "s**hi**mla" and "Del**hi**", so bare place
+ *     names were being classified as greetings.
+ *   - "या" (Hindi "or") occurs inside "क्या", the ordinary question marker, so
+ *     "कल बारिश होगी क्या?" was treated as a comparison.
+ *
+ * Boundaries must exclude combining marks as well as letters: "क्या" is
+ * क + ् + य + ा, so the character preceding "या" is a virama — a Mark, not a
+ * Letter. Checking only `\p{L}` would still match.
+ *
+ * Terms that carry their own padding (" vs ") are matched literally, since the
+ * spaces are the boundary.
+ */
+function containsTerm(haystack, term) {
+  if (/^\s|\s$/.test(term)) return haystack.includes(term);
+
+  const escaped = escapeRegex(term);
+  // ASCII terms use alphanumeric boundaries so "temp" does not match
+  // "temperature" — both are listed separately where both are wanted.
+  if (/^[\x20-\x7F]+$/.test(term)) {
+    return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'i').test(haystack);
+  }
+  return new RegExp(`(^|[^\\p{L}\\p{M}])${escaped}($|[^\\p{L}\\p{M}])`, 'u').test(haystack);
+}
+
+const hasAny = (haystack, terms) => terms.some((term) => containsTerm(haystack, term));
+
 function countHits(haystack, words = []) {
   let hits = 0;
   const matched = [];
   for (const w of words) {
-    if (haystack.includes(w.toLowerCase())) {
+    if (containsTerm(haystack, w.toLowerCase())) {
       hits += 1;
       matched.push(w);
     }
@@ -470,9 +691,15 @@ export function parseQuery(text, { lang: preferred = DEFAULT_LANG, context = {} 
   // A message that is only a place name means "current weather there".
   if (intent === INTENTS.UNKNOWN && (location.place || location.query)) intent = INTENTS.CURRENT;
 
-  // Greeting should not win when the user also named a place or a weather term.
-  if (intent === INTENTS.GREETING && (location.place || topScore < 2)) {
-    if (location.place || location.query) intent = INTENTS.CURRENT;
+  /*
+   * A named place always outranks a greeting.
+   *
+   * Previously this was gated on the greeting's score, which meant a bare
+   * "Shimla" stayed classified as a greeting. Whatever the scores, a message
+   * containing a location is a weather question.
+   */
+  if (intent === INTENTS.GREETING && (location.place || location.query)) {
+    intent = INTENTS.CURRENT;
   }
 
   const resolvedPlace = location.place ?? null;
@@ -516,25 +743,6 @@ const COMPARATIVE = [
   'ஒப்பீடு', 'சிறந்த', 'పోలిక', 'మంచిది', 'तुलनेत', 'चांगले',
 ];
 
-/**
- * Substring matching is unsafe for short Indic terms.
- *
- * The Hindi word for "or" is "या", which occurs inside "क्या" — the ordinary
- * question marker. Plain `includes()` therefore flagged "कल बारिश होगी क्या?"
- * ("will it rain tomorrow?") as a comparison and escalated a simple question to
- * the language model.
- *
- * Boundaries must exclude combining marks as well as letters: "क्या" is
- * क + ् + य + ा, so the character before "या" is a virama (a Mark, not a
- * Letter). Checking only `\p{L}` would still match.
- */
-function containsTerm(haystack, term) {
-  if (/^[\x20-\x7F]+$/.test(term)) return haystack.includes(term);
-  const re = new RegExp(`(^|[^\\p{L}\\p{M}])${escapeRegex(term)}($|[^\\p{L}\\p{M}])`, 'u');
-  return re.test(haystack);
-}
-
-const hasAny = (haystack, terms) => terms.some((term) => containsTerm(haystack, term));
 
 /**
  * Terms anchoring a question in the observed past, and in the forecast future.

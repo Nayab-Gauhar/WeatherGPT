@@ -29,6 +29,21 @@ const PHRASES = {
     pleasant: (p) => `Conditions in ${p} look comfortable over the next 24 hours.`,
     dry: (p) => `No rain is expected in ${p} over the next 24 hours.`,
   },
+  hinglish: {
+    rainLight: (p) => `Agle 24 ghante mein ${p} mein halki barish ho sakti hai.`,
+    rainModerate: (p) => `Agle 24 ghante mein ${p} mein halki se madhyam barish ho sakti hai.`,
+    rainHeavy: (p) => `Agle 24 ghante mein ${p} mein tez barish ki sambhavna hai.`,
+    umbrella: 'Chhatri saath rakhein.',
+    waterlog: 'Kuch ilaakon mein paani bhar sakta hai.',
+    thunder: 'Bijli-garaj ke saath toofan sambhav — us waqt ghar ke andar rahein.',
+    hot: (t) => `Din ka tapman ${t}°C tak ja sakta hai. Paani peete rahein, dhoop se bachein.`,
+    cold: (t) => `Nyuntam tapman ${t}°C tak gir sakta hai. Garam kapde taiyar rakhein.`,
+    windy: (w) => `${w} km/h tak tez hawa chal sakti hai. Bahar ka samaan surakshit karein.`,
+    fog: 'Subah ghana kohra dikhai kam kar sakta hai — dhyan se gaadi chalayein.',
+    pleasant: (p) => `Agle 24 ghante mein ${p} ka mausam sukhad rahega.`,
+    dry: (p) => `Agle 24 ghante mein ${p} mein barish ki sambhavna nahi hai.`,
+  },
+
   hi: {
     rainLight: (p) => `अगले 24 घंटों में ${p} में हल्की बारिश संभव है।`,
     rainModerate: (p) => `अगले 24 घंटों में ${p} में हल्की से मध्यम बारिश की संभावना है।`,

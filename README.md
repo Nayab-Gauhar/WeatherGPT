@@ -51,6 +51,8 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 |---|---|
 | **Real-time conditions** | Temperature, feels-like, humidity, wind, pressure and visibility for any town, village or coordinate on Earth. |
 | **Natural-language queries** | "Will it rain in Kutch tomorrow?", "किसान के लिए फसल सलाह", "சென்னையில் வானிலை எப்படி?" |
+| **Hinglish** | "Kolkata ka mausam kaisa hai?", "kal barish hogi kya" — answered in the same register |
+| **Coordinates** | Paste "22.57, 88.36" or "12°58'N 77°35'E", or click any point on the map |
 | **Open-ended reasoning** | "Compare Delhi and Bengaluru for a morning run — I have asthma" is answered from live data for both cities, with a recommendation. |
 | **NWP model integration** | Forecasts are served from GFS (NOAA), IFS (ECMWF) and ICON (DWD). A model-comparison view shows where they disagree. |
 | **Early warnings** | Colour-coded rain / heat / cold / wind / fog / thunderstorm / air-quality warnings on IMD's impact-based thresholds. |
@@ -137,9 +139,12 @@ src/
 ├── services/
 │   ├── agent.js             turn orchestration + tier routing
 │   ├── nlu.js               Tier 1 parser + complexity assessment
-│   ├── gemini.js            Tier 2 tool-calling loop
+│   ├── llm/
+│   │   ├── index.js         Tier 2 loop, provider-agnostic
+│   │   ├── gemini.js        Gemini provider + quota memory
+│   │   └── sarvamLlm.js     Sarvam provider (independent fallback)
 │   ├── tools.js             6 callable functions + grounding payloads
-│   ├── geo.js               place resolution (also a tool-safety boundary)
+│   ├── geo.js               place resolution, multi-provider + cached
 │   ├── openMeteo.js         all upstream I/O, caching, normalising
 │   ├── alerts.js            IMD-style warning thresholds
 │   ├── advisory.js          general + sector decision support
@@ -214,6 +219,78 @@ Three findings from measurement that no prompt change would have fixed:
   `gemini-3.5-flash` 12.6 s. Since a turn needs two or three round trips, the
   chain is ordered by measured speed — with the slowest model tried first, two
   calls alone exceeded the budget and the answer was lost to the fallback.
+
+### Every external dependency has a fallback
+
+Place lookup sits in front of nearly every answer, and language understanding in
+front of the interesting ones, so a single provider outage would take the product
+down. Both run through chains:
+
+| Capability | Order |
+|---|---|
+| Understanding | Gemini (5 models) → Sarvam → deterministic parser |
+| Geocoding | Nominatim India-first → Nominatim global → Open-Meteo |
+| Reverse geocoding | BigDataCloud → Nominatim → raw coordinates |
+| Speech out | Sarvam / Deepgram → browser Web Speech |
+
+Adding Sarvam as a second language model was not redundancy for its own sake:
+Gemini's free tier is 20 requests per model per day, and when the chain was spent
+the AI answer was lost entirely. Sarvam sits on a separate quota, supports tool
+calling in the OpenAI format, and answered in ~1.6 s in testing.
+
+### Choosing a geocoder on evidence
+
+Nominatim is the primary rather than the more convenient GeoNames-backed
+alternative, because the alternative is actively wrong for this audience. Tested
+side by side:
+
+| Query | Open-Meteo geocoder | Nominatim |
+|---|---|---|
+| কলকাতা, சென்னை, ಬೆಂಗಳೂರು | *no result* | correct |
+| Bombay | Bombay, **New York** | Mumbai |
+| Calcutta | Calcutta, **South Africa** | Kolkata |
+| Kutch | Kutch, **Colorado** | Kachchh, Gujarat |
+
+Returning a confident forecast for the wrong continent is worse than returning
+nothing. The India-restricted pass runs first so "Delhi" and "Hyderabad" resolve
+to the Indian cities, with a global pass behind it so London still works.
+
+That evidence also let the built-in gazetteer shrink from 44 hand-maintained
+entries to 12 — it is now an offline fast path for the most-asked places, not a
+substitute for a geocoder. Results are cached in `localStorage`, so any place is
+fetched at most once per device.
+
+### Hinglish is a first-class input, not a fallback
+
+A large share of Indian users type Hindi in the Latin alphabet — "Kolkata ka
+mausam kaisa hai", "kal barish hogi kya". Script detection alone reads that as
+English, every keyword lookup misses, and a perfectly clear question gets a
+generic fallback reply.
+
+So Hinglish is detected as its own register, with its own lexicon (including
+spelling variants: mausam/mosam, barish/baarish) and its own response templates,
+and the model prompt instructs the same register back. Detection needs two
+grammatical markers, or one in a short phrase, which keeps English queries out:
+all twelve English and native-script controls in the test suite classify
+correctly.
+
+Interface labels stay English deliberately. Users writing Hinglish read English
+UI comfortably, and romanising "Humidity" would read worse than leaving it.
+
+### Coordinates are handled once, centrally
+
+`utils/coords.js` exists because three layers previously had their own rules, and
+mistakes here are silent:
+
+- **Longitude wraps, latitude clamps.** Dragging a map east past the antimeridian
+  produces 190°, which is 170° W; providers reject the former.
+- **In-range values pass through untouched.** The obvious modulo turns 88.36 into
+  88.36000000000001 — invisible, but enough to make two identical map clicks miss
+  the cache and refetch.
+- **Out-of-range pairs are rejected, not clamped.** "95, 88" is not a position, so
+  silently turning it into the North Pole would answer a question nobody asked.
+- **Parsing is strict about intent.** Six notations are accepted, but "7 day
+  forecast" and "next 24 hours" must never be read as a position.
 
 ### Voice is the accessibility feature, not a gimmick
 
@@ -321,6 +398,8 @@ questions in a conversation are instant.
 | CAMS | Copernicus | Air quality (PM2.5, PM10, NO₂, O₃, SO₂, CO) |
 | Geocoding | Open-Meteo / GeoNames | Place resolution |
 | Gemini 2.5 Flash | Google AI Studio | Open-ended questions, tool calling |
+| sarvam-105b | Sarvam AI | Second LLM provider, independent quota |
+| Nominatim | OpenStreetMap | Primary geocoding, native scripts, reverse lookup |
 | saarika:v2.5 / bulbul:v3 | Sarvam AI | Indian-language speech in and out |
 | aura-2 | Deepgram | English speech synthesis |
 
@@ -363,8 +442,16 @@ than one that admits its edges:
   WRF is a regional model an agency runs itself, so it would arrive as an
   in-house gridded feed — that belongs behind the gateway described below,
   reaching this app through the same normalised shape as every other model.
-- **Reverse geocoding** for map clicks uses a third-party endpoint and degrades
-  to raw coordinates when unavailable.
+- **Reverse geocoding** tries two providers and then falls back to labelling the
+  point by its coordinates. Most of the planet is ocean or unnamed land, so a
+  forecast should not depend on a point having a name.
+- **Nominatim is rate-limited by policy** (roughly one request per second, cached
+  results expected). Fine at demo volume given the persistent cache, but a
+  deployment serving many users needs its own mirror or a commercial geocoder.
+- **Marathi and Malayalam place extraction is weaker** where the case marker fuses
+  into the stem (पुणे → पुण्यात). The residual-token heuristic usually still finds
+  the name; when it cannot, the conversation falls back to the place already under
+  discussion.
 
 ---
 
@@ -395,8 +482,8 @@ Mobile / Web ──▶ FastAPI gateway ──▶ Redis cache ──▶ NWP + IMD
 ## Testing
 
 ```bash
-npm run check:nlu    # 44 assertions: 28 parsing + 16 tier-routing
-npm run verify:ui    # real browser: 14 scenarios, screenshots + text assertions
+npm run check:nlu    # 82 assertions: parsing, routing, language detection, coordinates
+npm run verify:ui    # real browser: 16 scenarios, screenshots + text assertions
 ```
 
 `scripts/check-nlu.mjs` covers intent classification and entity extraction,

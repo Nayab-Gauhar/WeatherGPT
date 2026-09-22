@@ -4,7 +4,7 @@ import Header from './components/Header.jsx';
 import GlobeView from './components/GlobeView.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import { respond, userMessage, welcomeMessage } from './services/agent.js';
-import { reverseGeocode } from './services/openMeteo.js';
+import { resolveByCoordinates } from './services/geo.js';
 import { speak, stopSpeaking } from './services/speech.js';
 import { starterChips } from './i18n/chips.js';
 import { DEFAULT_LANG, t } from './i18n/index.js';
@@ -139,7 +139,7 @@ export default function App() {
   const handlePickCoordinates = useCallback(
     async (lat, lon) => {
       if (busy) return;
-      const resolved = await reverseGeocode(lat, lon);
+      const resolved = await resolveByCoordinates(lat, lon);
       setPlace(resolved);
       contextRef.current = { ...contextRef.current, place: resolved };
       send(`current weather in ${resolved.name}`, {

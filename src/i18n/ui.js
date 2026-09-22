@@ -6,6 +6,12 @@
  * instead of rendering blank strings.
  */
 export const UI = {
+  /*
+   * Hinglish intentionally has no label table. Interface chrome stays English —
+   * users writing Hinglish read English UI comfortably, and inventing romanised
+   * labels for "Humidity" or "Pressure" would read worse than the original.
+   * `t()` falls back to English automatically.
+   */
   en: {
     tagline: "Talk to the planet's weather",
     chatSub: 'Ask anything about the weather, anywhere.',

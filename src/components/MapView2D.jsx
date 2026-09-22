@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { clampLatitude, wrapLongitude } from '../utils/coords.js';
 import './MapView2D.css';
 
 /**
@@ -45,10 +46,18 @@ export default function MapView2D({ place, onPickCoordinates, theme = 'light', c
     [imgWidth, imgHeight],
   );
 
+  /*
+   * Screen position back to a position on Earth.
+   *
+   * Wrapping matters here: panning the map east past the antimeridian yields
+   * pixel positions that map to longitudes beyond 180°, which upstream APIs
+   * reject outright. Latitude is clamped instead, since there is nothing beyond
+   * the poles to wrap onto.
+   */
   const unproject = useCallback(
     (px, py) => ({
-      lon: (px / imgWidth) * 360 - 180,
-      lat: 90 - (py / imgHeight) * 180,
+      lon: wrapLongitude((px / imgWidth) * 360 - 180),
+      lat: clampLatitude(90 - (py / imgHeight) * 180),
     }),
     [imgWidth, imgHeight],
   );

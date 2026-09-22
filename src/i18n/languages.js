@@ -23,7 +23,23 @@ export const DEFAULT_LANG = 'en';
 
 export const LANG_CODES = LANGUAGES.map((l) => l.code);
 
-const BY_CODE = Object.fromEntries(LANGUAGES.map((l) => [l.code, l]));
+/**
+ * Hinglish is a *reply register*, not a selectable interface language.
+ *
+ * It is what the parser reports when a user types Hindi in the Latin alphabet,
+ * and the assistant answers in kind. It is absent from LANGUAGES because nobody
+ * picks it from a menu — and speech uses the Hindi voice, since the words are
+ * Hindi however they are spelled.
+ */
+const HINGLISH = {
+  code: 'hinglish',
+  native: 'Hinglish',
+  english: 'Hinglish',
+  bcp47: 'hi-IN',
+  script: 'latin',
+};
+
+const BY_CODE = Object.fromEntries([...LANGUAGES.map((l) => [l.code, l]), ['hinglish', HINGLISH]]);
 
 export function getLanguage(code) {
   return BY_CODE[code] ?? BY_CODE[DEFAULT_LANG];

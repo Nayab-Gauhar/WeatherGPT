@@ -15,15 +15,15 @@
  */
 
 import { parseQuery, assessComplexity, INTENTS } from './nlu.js';
-import { isGeminiConfigured, runGeminiTurn } from './gemini.js';
+import { isLlmConfigured, runLlmTurn } from './llm/index.js';
 import {
-  geocode,
   fetchForecast,
   fetchAirQuality,
   fetchClimateTrend,
   fetchModelComparison,
   fetchMonthToDate,
 } from './openMeteo.js';
+import { resolveByName } from './geo.js';
 import { deriveAlerts } from './alerts.js';
 import { generalAdvisory, sectorAdvisory, speechSummary } from './advisory.js';
 import { conditionLabel } from '../data/wmo.js';
@@ -45,23 +45,14 @@ async function resolvePlace(parsed, context) {
   if (parsed.place) return { place: parsed.place, resolvedBy: 'gazetteer' };
 
   if (parsed.locationQuery) {
-    try {
-      const results = await geocode(parsed.locationQuery, parsed.lang === 'en' ? 'en' : parsed.lang);
-      if (results.length) {
-        // Prefer an exact name match, then Indian results, then the largest place.
-        const wanted = parsed.locationQuery.toLowerCase();
-        const exact = results.filter((r) => r.name.toLowerCase() === wanted);
-        const pool = exact.length ? exact : results;
-        const indian = pool.filter((r) => r.countryCode === 'IN');
-        const ranked = (indian.length ? indian : pool).sort(
-          (a, b) => (b.population ?? 0) - (a.population ?? 0),
-        );
-        return { place: ranked[0], resolvedBy: 'geocoder' };
-      }
-    } catch {
-      // fall through to context / not-found handling
+    // Delegated to geo.js so the cache, the gazetteer and the provider chain
+    // (Open-Meteo then Nominatim) are shared with the tool layer.
+    const { place, resolvedBy } = await resolveByName(parsed.locationQuery, parsed.lang);
+    if (place) return { place, resolvedBy };
+
+    if (context.place) {
+      return { place: context.place, resolvedBy: 'context', unresolvedQuery: parsed.locationQuery };
     }
-    if (context.place) return { place: context.place, resolvedBy: 'context', unresolvedQuery: parsed.locationQuery };
     return { place: null, resolvedBy: 'none', unresolvedQuery: parsed.locationQuery };
   }
 
@@ -382,7 +373,7 @@ async function handleAdvisory(parsed, place, lang) {
  * misconfigured model degrades the answer rather than losing it.
  */
 async function handleWithGemini(text, { lang, context, onStep }) {
-  const result = await runGeminiTurn(text, {
+  const result = await runLlmTurn(text, {
     lang,
     place: context.place ?? null,
     model: context.model,
@@ -405,7 +396,7 @@ async function handleWithGemini(text, { lang, context, onStep }) {
     chips: place ? genericChips(place, lang) : [],
     speech: result.text,
     place,
-    engine: 'gemini',
+    provider: result.provider,
     model: result.model,
     toolCalls: result.toolCalls,
   };
@@ -473,7 +464,7 @@ export async function respond(text, { lang = 'en', context = {}, onStep } = {}) 
   const conversational = parsed.intent === INTENTS.GREETING || parsed.intent === INTENTS.HELP;
   let aiFallbackReason = null;
 
-  if (isGeminiConfigured && complexity.needsLlm && !conversational) {
+  if (isLlmConfigured() && complexity.needsLlm && !conversational) {
     const ai = await handleWithGemini(text, { lang: replyLang, context, onStep });
 
     if (ai?.failed) {
@@ -497,7 +488,7 @@ export async function respond(text, { lang = 'en', context = {}, onStep } = {}) 
           place: ai.place,
           meta: {
             intent: parsed.intent,
-            engine: 'gemini',
+            engine: ai.provider ?? 'llm',
             model: ai.model,
             routedBecause: complexity.reasons,
             toolCalls: ai.toolCalls,
@@ -599,7 +590,7 @@ function groundedSources(toolCalls = []) {
     compare_forecast_models: 'NOAA GFS · ECMWF IFS · DWD ICON',
   };
   const names = [...new Set(toolCalls.filter((c) => c.ok).map((c) => map[c.name]).filter(Boolean))];
-  return names.length ? names : ['Gemini 2.5 Flash'];
+  return names.length ? names : ['Language model'];
 }
 
 function sourcesFor(intent) {

@@ -3,7 +3,22 @@ import { useEffect, useRef } from 'react';
 import { LANGUAGES, coverage, t } from '../i18n/index.js';
 import { NWP_MODELS } from '../services/openMeteo.js';
 import { canSpeak, sttSupported, ttsSupported, inputEngine, outputEngine } from '../services/speech.js';
-import { isGeminiConfigured } from '../services/gemini.js';
+import { llmStatus } from '../services/llm/index.js';
+
+/**
+ * Summarise which language-model providers can serve a request.
+ *
+ * Both are listed because they are genuine alternates: when Gemini's daily
+ * free-tier allowance is spent, Sarvam keeps the capability alive.
+ */
+function describeLlm() {
+  const usable = llmStatus().filter((p) => p.available);
+  if (!usable.length) {
+    const configured = llmStatus().filter((p) => p.configured);
+    return configured.length ? 'quota exhausted today' : 'local parser only';
+  }
+  return usable.map((p) => p.label).join(' → ');
+}
 
 /** Human-readable provider names for the voice engines. */
 const ENGINE_LABELS = {
@@ -144,7 +159,7 @@ export default function SettingsMenu({
           </li>
           <li>
             <span>Open-ended questions</span>
-            <strong>{isGeminiConfigured ? 'Gemini 2.5 Flash' : 'local parser only'}</strong>
+            <strong>{describeLlm()}</strong>
           </li>
         </ul>
 
@@ -155,8 +170,8 @@ export default function SettingsMenu({
           {outputEngine(lang) === 'webspeech' &&
             !canSpeak(lang) &&
             'No system voice is installed for this language, so playback may fall back to English. '}
-          {!isGeminiConfigured &&
-            'Without a Gemini key, comparisons and open-ended questions fall back to the standard forecast answer.'}
+          {describeLlm() === 'local parser only' &&
+            'Without a Gemini or Sarvam key, comparisons and open-ended questions fall back to the standard forecast answer.'}
         </p>
       </section>
     </div>

@@ -37,6 +37,38 @@ export const TEMPLATES = {
     next24: 'in the next 24 hours',
   },
 
+  /**
+   * Hinglish — Hindi phrasing in the Latin alphabet.
+   *
+   * Users who type "Kolkata ka mausam kaisa hai" are not asking for Devanagari
+   * and are not asking for formal English; replying in either breaks the
+   * register. Kept deliberately colloquial, the way the question was asked.
+   */
+  hinglish: {
+    currentIntro: (p) => `${p} ka abhi ka mausam:`,
+    forecastIntro: (p, n) => `${p} ke liye ${n} din ka anuman:`,
+    dayIntro: (p, d) => `${d} ko ${p} ka anuman:`,
+    alertsIntro: (p, n) => `${p} ke liye ${n} mausam chetavni hai. Salah dhyan se padhein:`,
+    alertsNone: (p) => `${p} ke liye abhi koi mausam chetavni nahi hai.`,
+    aqiIntro: (p) => `${p} ki abhi ki hawa ki quality:`,
+    climateIntro: (p, y) => `Pichle ${y} saal mein ${p} ka jalvayu trend:`,
+    modelIntro: (p) =>
+      `${p} ke liye alag-alag mausam models ki tulna. Zyada antar matlab kam bharosa:`,
+    advisoryIntro: (p, s) => `${p} ke liye ${s} salah:`,
+    rainYes: (p, w, mm) => `Haan — ${p} mein ${w} barish ho sakti hai, lagbhag ${mm} mm.`,
+    rainNo: (p, w) => `${p} mein ${w} khaas barish ki sambhavna nahi hai.`,
+    greeting: () =>
+      'Namaste! Main WeatherGPT hoon. Kisi bhi jagah ka mausam, anuman, chetavni, hawa ki quality ya jalvayu trend poochh sakte hain — likh kar ya bol kar, apni bhasha mein.',
+    notFound: (q) =>
+      `"${q}" naam ki jagah nahi mili. Sheher ya zile ka naam try karein — jaise "Nagpur", "Kutch" ya "Shimla".`,
+    fallback: () =>
+      'Main abhi ka mausam, anuman, chetavni, hawa ki quality, jalvayu trend aur kisan/viman/samudra salah mein madad kar sakta hoon. Kisi jagah ka naam bataiye.',
+    error: () => 'Mausam server se connect nahi ho paya. Connection check karke phir try karein.',
+    tomorrowWord: 'kal',
+    todayWord: 'aaj',
+    next24: 'agle 24 ghante mein',
+  },
+
   hi: {
     currentIntro: (p) => `${p} के वर्तमान मौसम की जानकारी इस प्रकार है:`,
     forecastIntro: (p, n) => `${p} के लिए ${n} दिनों का पूर्वानुमान:`,

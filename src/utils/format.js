@@ -10,6 +10,7 @@
 
 import { getLanguage } from '../i18n/languages.js';
 import { hasNativeName, localisedPlaceName } from '../data/places.js';
+import { formatCoordinates } from './coords.js';
 
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -72,7 +73,8 @@ export function dayMonthLabel(iso, lang = 'en') {
   if (!parts) return '';
 
   // en-IN renders September as "Sept"; use the conventional three-letter form.
-  if (lang === 'en') return `${parts.d} ${MONTHS_SHORT[parts.m - 1]}`;
+  // Hinglish is written in Latin script, so it takes the same form.
+  if (lang === 'en' || lang === 'hinglish') return `${parts.d} ${MONTHS_SHORT[parts.m - 1]}`;
 
   const date = asUtcDate(iso);
   const { bcp47 } = getLanguage(lang);
@@ -85,9 +87,7 @@ export function dayMonthLabel(iso, lang = 'en') {
 
 /** Decimal degrees -> "Lat 22.57° N, Lon 88.36° E" */
 export function coordLabel(lat, lon) {
-  const ns = lat >= 0 ? 'N' : 'S';
-  const ew = lon >= 0 ? 'E' : 'W';
-  return `Lat ${Math.abs(lat).toFixed(2)}° ${ns}, Lon ${Math.abs(lon).toFixed(2)}° ${ew}`;
+  return `Lat ${formatCoordinates(lat, lon).replace(', ', ', Lon ')}`;
 }
 
 /**
@@ -100,7 +100,8 @@ export function coordLabel(lat, lon) {
  */
 export function placeLabel(place, lang = 'en') {
   if (!place) return '';
-  if (hasNativeName(place, lang)) return localisedPlaceName(place, lang);
+  // Hinglish is Latin script, so a native-script city name would clash.
+  if (lang !== 'hinglish' && hasNativeName(place, lang)) return localisedPlaceName(place, lang);
 
   const region = place.admin1 && place.admin1 !== place.name ? place.admin1 : '';
   const foreign = place.countryCode && place.countryCode !== 'IN' ? place.country : '';

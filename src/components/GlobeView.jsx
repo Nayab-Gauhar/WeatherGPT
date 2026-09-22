@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback, lazy, Suspense } from 'react';
 
 import { t } from '../i18n/index.js';
+import { clampLatitude, wrapLongitude } from '../utils/coords.js';
 import { PlusIcon, MinusIcon, LocateIcon, GlobeIcon, LayersIcon } from './Icons.jsx';
 import MapView2D from './MapView2D.jsx';
 import './GlobeView.css';
@@ -204,7 +205,11 @@ export default function GlobeView({
               countries={countries}
               markers={markers}
               buildMarker={buildMarker}
-              onGlobeClick={({ lat, lng }) => onPickCoordinates?.(lat, lng)}
+              // Normalised before leaving the renderer: three.js can report a
+              // longitude slightly outside ±180 at the seam.
+              onGlobeClick={({ lat, lng }) =>
+                onPickCoordinates?.(clampLatitude(lat), wrapLongitude(lng))
+              }
               onReady={() => setGlobeReady(true)}
             />
           </Suspense>
