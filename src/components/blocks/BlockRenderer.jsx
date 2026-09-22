@@ -37,7 +37,14 @@ export default function BlockRenderer({ block, lang }) {
     case 'daySummary':
       return <DaySummaryCard day={block.day} dayIndex={block.dayIndex} lang={lang} />;
     case 'alerts':
-      return <AlertsCard warnings={block.warnings} lang={lang} compact={block.compact} />;
+      return (
+        <AlertsCard
+          warnings={block.warnings}
+          place={block.place}
+          lang={lang}
+          compact={block.compact}
+        />
+      );
     case 'aqi':
       return <AqiCard air={block.air} place={block.place} lang={lang} />;
     case 'climate':

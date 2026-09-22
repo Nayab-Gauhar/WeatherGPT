@@ -62,6 +62,7 @@ npm run verify:ui    # drives 14 scenarios in a real browser, saves screenshots
 | **Climate analysis** | 15 years of ERA5 reanalysis with least-squares trends per decade. |
 | **Voice** | Ask by speaking and hear the answer read back — Sarvam for Indian languages, Deepgram for English, browser Web Speech as fallback. |
 | **Saved places** | Pin the places you check daily. Local by default; synced to your account when signed in. |
+| **Warning dissemination** | Forward a warning by SMS from your own phone — reaches a feature phone with no data. |
 | **Sector advisories** | Agriculture, aviation, marine and urban/disaster decision support. |
 
 ---
@@ -299,6 +300,31 @@ mistakes here are silent:
 - **Parsing is strict about intent.** Six notations are accepted, but "7 day
   forecast" and "next 24 hours" must never be read as a position.
 
+### SMS dissemination without a gateway
+
+The problem statement asks for flood and cyclone warning dissemination, and the
+hard part is regulatory rather than technical. Sending SMS *from* a platform in
+India needs DLT registration under TRAI's rules — a registered header and
+**pre-approved templates** — which rules out transmitting freely generated text,
+and it needs a backend holding gateway credentials.
+
+What works today with no backend, no gateway and no registration is to compose
+the warning and hand it to the *user's own* messaging app, pre-filled, via an
+`sms:` link. They are the sender, so no approval applies, and it reaches a feature
+phone with no data connection — which is exactly where a flood warning most needs
+to arrive.
+
+Message length is treated as a real constraint. Indic scripts force UCS-2
+encoding, which allows **70 characters per segment against GSM-7's 160**, so the
+same warning in Tamil has less than half the room. The composer builds a required
+core — severity, place, hazard, action — then sheds optional detail until it fits
+two segments, because parts of a longer message can arrive out of order. Measured
+trigger values are reduced to a script-neutral form (`[92 km/h]`) rather than left
+as English prose inside a Hindi sentence.
+
+Verified across seven languages: every one fits within two segments, and Tamil
+correctly drops both optional parts to do so.
+
 ### Authentication is additive, never a gate
 
 Sign-in is provided by Clerk, and the guiding rule is that **nothing about
@@ -485,6 +511,10 @@ than one that admits its edges:
   including with a deliberately unreachable key, but no real account existed to
   complete a sign-up round trip. Clerk's CLI cannot provision keys for React
   without an interactive login, so that step needs the project owner.
+- **SMS is user-sent, not platform-sent.** The app pre-fills the message; the user
+  presses send. Platform-originated SMS needs DLT registration and a backend, and
+  for genuine mass alerting India already uses CAP feeds via SACHET and cell
+  broadcast, which reach every handset in a tower's range with no phone numbers.
 - **No WRF.** The problem statement names GFS/WRF; GFS is integrated directly.
   WRF is a regional model an agency runs itself, so it would arrive as an
   in-house gridded feed — that belongs behind the gateway described below,

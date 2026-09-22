@@ -957,3 +957,70 @@
   border-color: color-mix(in srgb, var(--orange) 40%, transparent);
   background: color-mix(in srgb, var(--orange) 8%, var(--surface));
 }
+
+/* ------------------------------------------------------------ SMS forwarding -- */
+
+.share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+}
+
+.share__sms {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--r-pill);
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background var(--dur) var(--ease);
+}
+
+:root[data-theme='dark'] .share__sms {
+  color: var(--on-brand);
+}
+
+.share__sms:hover {
+  background: var(--brand-600);
+}
+
+.share__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  font-size: 11.5px;
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.share__copy:hover {
+  background: var(--bg-sunken);
+  color: var(--text);
+}
+
+.share__copy svg {
+  color: var(--green);
+}
+
+.share__meta {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* More than two segments risks out-of-order delivery — flag it. */
+.share__meta.is-long {
+  color: var(--orange);
+}

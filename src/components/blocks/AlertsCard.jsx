@@ -1,4 +1,5 @@
 import { AlertIcon, CheckIcon } from '../Icons.jsx';
+import ShareWarning from './ShareWarning.jsx';
 import { t } from '../../i18n/index.js';
 import { dayMonthLabel } from '../../utils/format.js';
 
@@ -10,7 +11,7 @@ import { dayMonthLabel } from '../../utils/format.js';
  * pairs the hazard with what to do about it, since a warning without an action
  * is not actionable.
  */
-export default function AlertsCard({ warnings, lang, compact = false }) {
+export default function AlertsCard({ warnings, place, lang, compact = false }) {
   if (!warnings) return null;
 
   if (warnings.count === 0) {
@@ -57,6 +58,13 @@ export default function AlertsCard({ warnings, lang, compact = false }) {
           </li>
         ))}
       </ul>
+
+      {/*
+        Only on the full card, not the compact inline variant: a warning attached
+        beneath a forecast answer is context, whereas the dedicated warnings
+        answer is the one someone would actually forward.
+      */}
+      {!compact && <ShareWarning place={place} warnings={warnings} lang={lang} />}
     </article>
   );
 }
